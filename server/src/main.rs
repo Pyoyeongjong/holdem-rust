@@ -3,14 +3,19 @@ use rand::seq::SliceRandom;
 
 struct Player {
     pub name: String,
-    chips: u32,
+    chips: u32,`
     state: PlayerState,
     pub hands: Option<(String, String)>,
+    player_pot: u32,
 }
 
 enum PlayerState {
-    Dead,
-    Alive,
+    Idle,
+    Check,
+    Call,
+    Raise,
+    Fold,
+    AllIn,
     Waiting,
 }
 
@@ -20,6 +25,7 @@ struct Game {
     pot: u32,
     board: Vec<String>,
     dealer_idx: u32,
+    blind: u32,
 }
 
 impl Player {
@@ -29,18 +35,34 @@ impl Player {
             chips,
             state: PlayerState::Waiting,
             hands: None,
+            b
         }
     }
+
+    pub fn acted(&self) -> bool {
+        match self.state {
+            PlayerState::Idle => false,
+            PlayerState::Check => true,
+            PlayerState::Call => true,
+            PlayerState::Raise => true,
+            PlayerState::Fold => false,
+            PlayerState::AllIn => true,
+            PlayerState::Waiting => false,
+        }
+    }
+
+    
 }
 
 impl Game {
-    fn new() -> Game {
+    fn new(blind: u32) -> Game {
         Game {
             players: Vec::new(),
             deck: Game::init_deck(),
             pot: 0,
             board: Vec::new(),
             dealer_idx: 0,
+            blind,
         }
     }
 
@@ -78,6 +100,8 @@ impl Game {
         self.deck = Game::init_deck();
         self.board = Vec::new();
         self.print_deck();
+        self.pot = 0;
+        self.dealer_idx = (self.dealer_idx + 1) % len(self.players);
 
         // Free Flop
         for player in self.players.iter_mut() {
@@ -119,7 +143,7 @@ impl Game {
 
     fn init_player_state(&mut self) {
         for player in self.players.iter_mut() { // iter_mut 으로 가변 참조로 불러옴
-            player.state = PlayerState::Alive; //
+            player.state = PlayerState::Idle; //
             player.hands = None;
         }
     }
@@ -150,8 +174,40 @@ impl Game {
 
     }
 
-    fn betting_phase(&mut self) {
-        
+    fn betting_phase(&mut self, is_free_flop: bool) {
+
+        let sb_idx = (self.dealer_idx + 1) % len(players);
+        let mut cur_player_idx;
+        let mut call_pot;
+
+        if is_free_flop {
+
+            let bb_idx = (sb_idx + 1) % len(players);
+            cur_player_idx = (sb_idx + 2) % len(players);
+
+            players[sb].Raise(self.blind / 2);
+            players[bb].Raise(self.blind);
+
+            call_pot = self.blind;
+            
+            self.pot = self.blind * 1.5;
+            
+        } else {
+            cur_player_idx = sb_idx;
+            call_pot = find_largest_player_pot();
+        }
+
+        while !is_bet_finished(players[cur_player_idx]) {
+            
+        }
+    }
+
+    fn is_bet_finished(player: Player, call_pot: &u32) -> bool {
+        if call_pot == player.player_pot && player.alive() {
+            true
+        } else {
+            false
+        }
     }
 
     fn show_down(&mut self) {
