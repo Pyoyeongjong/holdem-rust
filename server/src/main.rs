@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, io::Read, ptr::copy_nonoverlapping};
 use rand::seq::SliceRandom;
 use std::io;
 
@@ -10,6 +10,7 @@ struct Player {
     player_pot: u32,
 }
 
+#[derive(PartialEq)]
 enum PlayerState {
     Idle,
     Check,
@@ -78,6 +79,11 @@ impl Player {
         self.chips -= size;
         self.player_pot += size;
         self.state = PlayerState::Raise;
+    }
+
+    pub fn blind_raise(&mut self, size: u32) {
+        self.chips -= size;
+        self.player_pot += size;
     }
 
     pub fn fold(&mut self) {
@@ -156,7 +162,7 @@ impl Game {
 
         self.blind_bet();
 
-        self.betting_phase(false);
+        self.betting_phase(true);
 
         // Flop
         for _ in 0..3 {
@@ -224,10 +230,10 @@ impl Game {
             let bb_idx = (sb_idx + 1) % self.players.len();
             cur_player_idx = (sb_idx + 2) % self.players.len();
 
-            self.player_raise(sb_idx as usize, self.blind / 2);
-            self.player_raise(bb_idx as usize, self.blind);
+            self.player_blind_raise(sb_idx as usize, self.blind / 2);
+            self.player_blind_raise(bb_idx as usize, self.blind);
 
-            call_pot = self.blind;
+            call_pot = self.blind.clone();
             
             self.pot = ( self.blind as f32 * 1.5 ) as u32;
             
@@ -240,26 +246,70 @@ impl Game {
 
             let player = &self.players[cur_player_idx];
 
-            let mut action: String = String::new();
-            println!("{}, choose your action. 1: Check, 2: Call, 3: Raise, 4: Fold.", player.name);
-            println!("your chips amount is {}. and..", player.chips);
-            
-            if call_pot == 0 {
-                println!("Now call pot is 0. You can check.");
-            } else {
-                println!("You have to bet {} to call...", call_pot - player.player_pot);
+            if !player.alive() {
+                println!("{} is Dead", player.name);
+                continue;
             }
 
-            io::stdin().read_line(&mut action).expect("Read Error");
+            println!("{}, choose your action. 1: Check, 2: Call, 3: Raise, 4: Fold.", player.name);
+            println!("Your chips amount is {}.", player.chips);
             
+            if call_pot == 0 || player.player_pot == call_pot {
+                println!("You can check, call, raise, fold.");
+            } else {
+                println!("You have to bet {} to call... You can call, raise, fold", call_pot - player.player_pot);
+                if player.state == PlayerState::Call {
+                    println!("You can call or just fold.. ");
+                }
+            }
+            
+            let mut action = String::new();
+            io::stdin().read_line(&mut action).expect("Read Error");
 
+            let action: u32 = action.trim().parse().expect("Please type a number!"); // 이게 u32 이상을 넘어설 수 있으므로 match에서 예외처리를 해줘야한다.
+            
+            call_pot = match action {
+                1 => self.player_check(cur_player_idx),
+                2 => self.player_call(cur_player_idx, call_pot - player.player_pot),
+                3 => {
+                    let mut raise_num = String::new();
+                    let player_chips = player.chips.clone();
 
-            cur_player_idx = (cur_player_idx + 1) & self.players.len();
+                    println!("Enter your raise size..");
+
+                    io::stdin().read_line(&mut raise_num).expect("Read Error");
+                    let raise_num = raise_num.trim().parse().expect("Please type a number!");
+
+                    if player_chips < raise_num {
+                        panic!("Can't raise with this num!");
+                    }
+                    
+                    self.player_raise(cur_player_idx, raise_num)
+                }
+                4 => {
+                    self.player_fold(cur_player_idx);
+                    call_pot
+                },
+                _ => {
+                    println!("Please Enter Correct Number!");
+                    call_pot
+                }
+            };
+
+            cur_player_idx = (cur_player_idx + 1) % self.players.len();
         }
+
+        self.set_player_idle();
 
     }
 
-    fn player_raise(&mut self, idx: usize, size: u32) -> u32{
+    fn set_player_idle(&mut self) {
+        for player in self.players.iter_mut() {
+            player.state = PlayerState::Idle;
+        }
+    }
+
+    fn player_raise(&mut self, idx: usize, size: u32) -> u32 {
 
         self.players[idx].raise(size);
         self.pot += size;
@@ -267,11 +317,38 @@ impl Game {
         self.players[idx].player_pot
     }
 
+    fn player_blind_raise(&mut self, idx: usize, size: u32) -> u32 {
+
+        self.players[idx].blind_raise(size);
+        self.pot += size;
+
+        self.players[idx].player_pot
+    }
+
+    fn player_call(&mut self, idx: usize, size: u32) -> u32 {
+
+        self.players[idx].call(size);
+        self.pot += size;
+
+        self.players[idx].player_pot
+    }
+
+    fn player_check(&mut self, idx: usize) -> u32 {
+
+        self.players[idx].check();
+        self.players[idx].player_pot
+    }
+
+    fn player_fold(&mut self, idx: usize) {
+
+        self.players[idx].fold();
+    }
+
     fn is_bet_finished(&mut self, idx: usize, call_pot: &u32) -> bool {
 
         let player = &self.players[idx];
 
-        if call_pot == &player.player_pot && player.alive() {
+        if call_pot == &player.player_pot && player.alive() && player.state != PlayerState::Idle {
             true
         } else {
             false
@@ -283,7 +360,16 @@ impl Game {
     }
 
     fn find_largest_player_pot(&self) -> u32 {
-        1
+
+        let mut result: u32 = 0;
+
+        for player in self.players.iter() {
+            if player.player_pot > result {
+                result = player.player_pot.clone();
+            }
+        }
+
+        result
     }
 
 }
@@ -296,15 +382,10 @@ fn main() {
     game.insert_player("ByungHyeok".to_string(), 1000);
 
     game.game_start();
-    game.game_start();
 
 }
 
 /* 다음 해야할 것들
 
-1. dealer_idx -> sb_idx로 바꿔도 될 듯
-2. is_bet_finished 함수에 예외 없는지 곰곰히 생각
-3. find_largest_player_pot 구현
-4. betting_phase -> while 문 마저 구현현
 
 끝 */
