@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, io::Read, ptr::copy_nonoverlapping};
+use std::collections::VecDeque;
 use rand::seq::SliceRandom;
 use std::io;
 
@@ -28,6 +28,25 @@ struct Game {
     board: Vec<String>,
     dealer_idx: usize,
     blind: u32,
+    can_raise: usize,
+}
+
+struct ActionFlag {
+    pub check: bool,
+    pub call: bool,
+    pub fold: bool,
+    pub raise: bool,
+}
+
+impl ActionFlag {
+    fn new(check: bool, call: bool, fold: bool, raise: bool) -> Self {
+        Self {
+            check,
+            call,
+            fold,
+            raise
+        }
+    }
 }
 
 impl Player {
@@ -75,10 +94,16 @@ impl Player {
         self.state = PlayerState::Call;
     }
 
-    pub fn raise(&mut self, size: u32) {
+    pub fn raise(&mut self, size: u32) -> bool {
         self.chips -= size;
         self.player_pot += size;
-        self.state = PlayerState::Raise;
+        if self.chips == 0 {
+            self.state = PlayerState::AllIn;
+            true
+        } else {
+            self.state = PlayerState::Raise;
+            false
+        }
     }
 
     pub fn blind_raise(&mut self, size: u32) {
@@ -88,12 +113,6 @@ impl Player {
 
     pub fn fold(&mut self) {
         self.state = PlayerState::Fold;
-    }
-
-    pub fn allin(&mut self) {
-        self.player_pot += self.chips;
-        self.chips = 0;
-        self.state = PlayerState::AllIn;
     }
 
 }
@@ -107,6 +126,7 @@ impl Game {
             board: Vec::new(),
             dealer_idx: 0,
             blind,
+            can_raise: 0,
         }
     }
 
@@ -142,6 +162,7 @@ impl Game {
 
     pub fn game_start(&mut self) {
         self.init_player_state();
+        self.can_raise = self.players.len();
         self.deck = Game::init_deck();
         self.board = Vec::new();
         self.print_deck();
@@ -160,9 +181,12 @@ impl Game {
             println!("{} has {}, {}", player.name, player.hands.as_ref().unwrap().0, player.hands.as_ref().unwrap().1);
         }
 
-        self.blind_bet();
-
         self.betting_phase(true);
+
+        if self.is_early_showdown() {
+            self.early_showdown();
+            return;
+        }
 
         // Flop
         for _ in 0..3 {
@@ -172,15 +196,30 @@ impl Game {
         self.print_board();
         self.betting_phase(false);
 
+        if self.is_early_showdown() {
+            self.early_showdown();
+            return;
+        }
+
         // Turn
         self.board.push(self.deck.pop_front().unwrap());
         self.print_board();
         self.betting_phase(false);
 
+        if self.is_early_showdown() {
+            self.early_showdown();
+            return;
+        }
+
         // River
         self.board.push(self.deck.pop_front().unwrap());
         self.print_board();
         self.betting_phase(false);
+
+        if self.is_early_showdown() {
+            self.early_showdown();
+            return;
+        }
 
         self.show_down();
 
@@ -215,10 +254,6 @@ impl Game {
         deck
     }
 
-    fn blind_bet(&mut self) {
-
-    }
-
     fn betting_phase(&mut self, is_free_flop: bool) {
 
         let sb_idx = (self.dealer_idx + 1) % self.players.len();
@@ -246,42 +281,89 @@ impl Game {
 
             let player = &self.players[cur_player_idx];
 
+            let mut flag: ActionFlag = ActionFlag::new(true, true, true, true);
+
             if !player.alive() {
                 println!("{} is Dead", player.name);
+                cur_player_idx = (cur_player_idx + 1) % self.players.len();
                 continue;
             }
+
+            if player.state == PlayerState::AllIn {
+                println!("{} is All-in state", player.name);
+                cur_player_idx = (cur_player_idx + 1) % self.players.len();
+                continue;
+            }
+
+            println!("Current Pot-size is {}", self.pot);
 
             println!("{}, choose your action. 1: Check, 2: Call, 3: Raise, 4: Fold.", player.name);
             println!("Your chips amount is {}.", player.chips);
             
             if call_pot == 0 || player.player_pot == call_pot {
-                println!("You can check, call, raise, fold.");
+                println!("You can check, raise, or fold.");
+                flag.call = false;
             } else {
                 println!("You have to bet {} to call... You can call, raise, fold", call_pot - player.player_pot);
+                flag.check = false;
                 if player.state == PlayerState::Call {
+                    flag.call = false;
                     println!("You can call or just fold.. ");
                 }
             }
             
-            let mut action = String::new();
-            io::stdin().read_line(&mut action).expect("Read Error");
+            let mut bet_action: u32;
 
-            let action: u32 = action.trim().parse().expect("Please type a number!"); // 이게 u32 이상을 넘어설 수 있으므로 match에서 예외처리를 해줘야한다.
+            loop {
+                
+                let mut action = String::new();
+                io::stdin().read_line(&mut action).expect("Read Error");
+
+                bet_action = action.trim().parse().expect("Please type a number!"); // 이게 u32 이상을 넘어설 수 있으므로 match에서 예외처리를 해줘야한다.
+
+                match bet_action {
+                    1 => if flag.check == true {
+                        break;
+                    }
+                    2 => if flag.call == true {
+                        break;
+                    }
+                    3 => if flag.raise == true {
+                        break;
+                    }
+                    4 => if flag.fold == true {
+                        break;
+                    }
+
+                    _ => {
+                        println!("Please Type Correct Action..");
+                        continue;
+                    }
+                }
+
+                println!("You can't Act this.. Try again");
+            }
             
-            call_pot = match action {
+            call_pot = match bet_action {
                 1 => self.player_check(cur_player_idx),
                 2 => self.player_call(cur_player_idx, call_pot - player.player_pot),
                 3 => {
-                    let mut raise_num = String::new();
+                    let mut raise_num_buf = String::new();
+                    let mut raise_num: u32;
                     let player_chips = player.chips.clone();
 
-                    println!("Enter your raise size..");
+                    loop {
+                        println!("Enter your raise size..");
 
-                    io::stdin().read_line(&mut raise_num).expect("Read Error");
-                    let raise_num = raise_num.trim().parse().expect("Please type a number!");
+                        io::stdin().read_line(&mut raise_num_buf).expect("Read Error");
+                        raise_num = raise_num_buf.trim().parse().expect("Please type a number!");
 
-                    if player_chips < raise_num {
-                        panic!("Can't raise with this num!");
+                        if player_chips < raise_num {
+                            println!("Can't raise with this num!");
+                            continue;
+                        } else {
+                            break;
+                        }
                     }
                     
                     self.player_raise(cur_player_idx, raise_num)
@@ -303,6 +385,21 @@ impl Game {
 
     }
 
+    fn is_early_showdown(&self) -> bool {
+        self.can_raise <= 1
+    }
+
+    fn early_showdown(&mut self) {
+
+        // 보드 다 깔기
+
+        while self.board.len() < 5 {
+            self.board.push(self.deck.pop_front().unwrap());
+        }
+
+        self.show_down();
+    }
+
     fn set_player_idle(&mut self) {
         for player in self.players.iter_mut() {
             player.state = PlayerState::Idle;
@@ -311,7 +408,10 @@ impl Game {
 
     fn player_raise(&mut self, idx: usize, size: u32) -> u32 {
 
-        self.players[idx].raise(size);
+        let is_allin = self.players[idx].raise(size);
+        if is_allin {
+            self.can_raise -= 1;
+        }
         self.pot += size;
 
         self.players[idx].player_pot
@@ -357,6 +457,9 @@ impl Game {
 
     fn show_down(&mut self) {
 
+        for player in self.players.iter() {
+            
+        }
     }
 
     fn find_largest_player_pot(&self) -> u32 {
@@ -387,5 +490,29 @@ fn main() {
 
 /* 다음 해야할 것들
 
+evaluate_hand 구현하기
 
 끝 */
+
+fn evaluate_hand(vec: Vec<String>) {
+    
+    // 스티플
+
+    // 포카드
+
+    // 풀하우스
+
+    // 플러시
+
+    // 스트레이트
+
+    // 트리플
+
+    // 투페어
+
+    // 페어
+
+    // 탑
+
+
+}
