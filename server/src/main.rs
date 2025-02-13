@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, default};
 use rand::seq::SliceRandom;
 use std::io;
 
@@ -19,6 +19,7 @@ enum PlayerState {
     Fold,
     AllIn,
     Waiting,
+    Winner,
 }
 
 struct Game {
@@ -29,6 +30,8 @@ struct Game {
     dealer_idx: usize,
     blind: u32,
     can_raise: usize,
+    alive: usize,
+    winners: usize,
 }
 
 struct ActionFlag {
@@ -62,13 +65,20 @@ impl Player {
 
     pub fn acted(&self) -> bool {
         match self.state {
-            PlayerState::Idle => false,
             PlayerState::Check => true,
             PlayerState::Call => true,
             PlayerState::Raise => true,
-            PlayerState::Fold => false,
             PlayerState::AllIn => true,
-            PlayerState::Waiting => false,
+            _ => false,
+        }
+    }
+
+    pub fn should_return_to_idle(&self) -> bool {
+        match self.state {
+            PlayerState::Check => true,
+            PlayerState::Call => true,
+            PlayerState::Raise => true,
+            _ => false,
         }
     }
 
@@ -78,9 +88,8 @@ impl Player {
             PlayerState::Check => true,
             PlayerState::Call => true,
             PlayerState::Raise => true,
-            PlayerState::Fold => false,
             PlayerState::AllIn => true,
-            PlayerState::Waiting => false,
+            _ => false,
         }
     }
 
@@ -127,6 +136,8 @@ impl Game {
             dealer_idx: 0,
             blind,
             can_raise: 0,
+            alive: 0,
+            winners: 0,
         }
     }
 
@@ -168,6 +179,8 @@ impl Game {
         self.print_deck();
         self.pot = 0;
         self.dealer_idx = (self.dealer_idx + 1) % self.players.len();
+        self.alive = self.players.len();
+        self.winners = 0;
 
         // Free Flop
         for player in self.players.iter_mut() {
@@ -185,6 +198,19 @@ impl Game {
 
         if self.is_early_showdown() {
             self.early_showdown();
+            self.winner_takes_pot();
+            return;
+        }
+
+        if self.is_end() {
+
+            for player in self.players.iter_mut() {
+                if player.alive() {
+                    player.state = PlayerState::Winner;
+                    self.winners += 1;
+                }
+            } 
+            self.winner_takes_pot();
             return;
         }
 
@@ -197,9 +223,25 @@ impl Game {
         self.betting_phase(false);
 
         if self.is_early_showdown() {
+            
             self.early_showdown();
+            self.winner_takes_pot();
             return;
         }
+
+        if self.is_end() {
+
+            for player in self.players.iter_mut() {
+                if player.alive() {
+                    player.state = PlayerState::Winner;
+                    self.winners += 1;
+                }
+            } 
+            self.winner_takes_pot();
+            return;
+        }
+        
+        self.set_player_idle();
 
         // Turn
         self.board.push(self.deck.pop_front().unwrap());
@@ -208,6 +250,19 @@ impl Game {
 
         if self.is_early_showdown() {
             self.early_showdown();
+            self.winner_takes_pot();
+            return;
+        }
+
+        if self.is_end() {
+
+            for player in self.players.iter_mut() {
+                if player.alive() {
+                    player.state = PlayerState::Winner;
+                    self.winners += 1;
+                }
+            } 
+            self.winner_takes_pot();
             return;
         }
 
@@ -218,6 +273,19 @@ impl Game {
 
         if self.is_early_showdown() {
             self.early_showdown();
+            self.winner_takes_pot();
+            return;
+        }
+
+        if self.is_end() {
+
+            for player in self.players.iter_mut() {
+                if player.alive() {
+                    player.state = PlayerState::Winner;
+                    self.winners += 1;
+                }
+            } 
+            self.winner_takes_pot();
             return;
         }
 
@@ -238,7 +306,7 @@ impl Game {
         let mut rng = rand::rng();
         
         let suits = vec!["♠", "◆", "♥", "♣"];
-        let ranks = vec!["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+        let ranks = vec!["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
         for suit in suits.iter() {
             for rank in ranks.iter() {
                 deck.push(format!("{}{}", suit, rank)); // format은 참조자를 이용한다. -> 그리고 새로운 String 반환환다.
@@ -255,6 +323,8 @@ impl Game {
     }
 
     fn betting_phase(&mut self, is_free_flop: bool) {
+
+        
 
         let sb_idx = (self.dealer_idx + 1) % self.players.len();
         let mut cur_player_idx: usize;
@@ -278,6 +348,8 @@ impl Game {
         }
 
         while !self.is_bet_finished(cur_player_idx as usize, &call_pot) {
+
+            println!("--------------------");
 
             let player = &self.players[cur_player_idx];
 
@@ -370,6 +442,8 @@ impl Game {
                 }
                 4 => {
                     self.player_fold(cur_player_idx);
+                    self.alive -= 1;
+                    self.can_raise -= 1;
                     call_pot
                 },
                 _ => {
@@ -381,12 +455,34 @@ impl Game {
             cur_player_idx = (cur_player_idx + 1) % self.players.len();
         }
 
-        self.set_player_idle();
+    }
+
+    pub fn winner_takes_pot(&mut self) { // Chop이 날 수 있음 주의!
+        for player in self.players.iter_mut() {
+            println!("Player {} ...", player.name);
+            if player.state == PlayerState::Winner {
+                player.chips +=  self.pot / self.winners as u32;
+                println!("Winner {} takes {} chips!", player.name, self.pot / self.winners as u32)
+            }
+            player.player_pot = 0;
+        }
 
     }
 
     fn is_early_showdown(&self) -> bool {
-        self.can_raise <= 1
+        if self.alive > 1 && self.can_raise <= 1 {
+            println!("early showdown!");
+            return true;
+        }
+        false
+    }
+
+    fn is_end(&self) -> bool {
+        if self.alive == 1 {
+            println!("is end~~");
+            return true
+        }
+        false
     }
 
     fn early_showdown(&mut self) {
@@ -402,7 +498,9 @@ impl Game {
 
     fn set_player_idle(&mut self) {
         for player in self.players.iter_mut() {
-            player.state = PlayerState::Idle;
+            if player.should_return_to_idle() {
+                player.state = PlayerState::Idle;
+            }
         }
     }
 
@@ -448,7 +546,7 @@ impl Game {
 
         let player = &self.players[idx];
 
-        if call_pot == &player.player_pot && player.alive() && player.state != PlayerState::Idle {
+        if call_pot == &player.player_pot && player.alive() && player.state != PlayerState::Idle || self.is_end() {
             true
         } else {
             false
@@ -457,10 +555,65 @@ impl Game {
 
     fn show_down(&mut self) {
 
-        for player in self.players.iter() {
-            
+        fn compare_hands (player: &Player, winner: &Player, board: &Vec<String>) -> i32 {
+            let mut player_cards = board.clone();
+            let player_hand = player.hands.clone().unwrap();
+            player_cards.push(player_hand.0);
+            player_cards.push(player_hand.1);
+    
+            let mut winner_cards = board.clone();
+            let winner_hand = winner.hands.clone().unwrap();
+            winner_cards.push(winner_hand.0);
+            winner_cards.push(winner_hand.1);
+    
+            if evaluate_hand(&player_cards) > evaluate_hand(&winner_cards) {
+                1
+            } else if evaluate_hand(&player_cards) == evaluate_hand(&winner_cards) {
+                0
+            } else {
+                -1
+            }
         }
+
+        if self.alive == 1 {
+            for player in self.players.iter_mut() {
+                if player.alive() {
+                    player.state = PlayerState::Winner;
+                    return;
+                }
+            }
+        }
+
+        let mut winners: Vec<&mut Player> = Vec::new();
+        let board = self.board.clone();
+
+        for player in self.players.iter_mut() {
+            if winners.len() == 0 {
+                winners.push(player);
+            } else {
+                match compare_hands(player, winners[0], &board) {
+                    1 =>{
+                        winners = Vec::new();
+                        winners.push(player);
+                    },
+                    0 =>{
+                        winners.push(player);
+                    },
+                    _ => {
+
+                    }
+                }
+            }
+        }
+
+        self.winners = winners.len();
+        for player in winners {
+            player.state = PlayerState::Winner;
+        }
+
+
     }
+
 
     fn find_largest_player_pot(&self) -> u32 {
 
@@ -477,6 +630,300 @@ impl Game {
 
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum HandRank {
+    TopCard(u8, u8, u8, u8, u8),
+    Pair(u8, u8, u8, u8),
+    TwoPairs(u8, u8, u8),
+    ThreeofCards(u8, u8, u8),
+    Straight(u8),
+    Flush(u8, u8, u8, u8, u8),
+    FullHouse(u8, u8),
+    FourOfCards(u8, u8),
+    StraigntFlush(u8, u8, u8, u8, u8),
+}
+
+fn is_straight(vec: &Vec<u8>) -> Option<[u8; 5]> {
+    if vec.len() < 5 {
+        None
+    } else {
+
+        let mut idx = 0;
+        let mut prev = vec[idx];
+        idx += 1;
+        let mut count = 1;
+
+        while idx < vec.len() && count < 5 {
+            
+            let cur = vec[idx];
+
+            if prev - 1 == cur {
+                count += 1;
+            }
+            else {
+                count = 1;
+            }
+            prev = cur;
+            idx += 1;
+        }
+
+        if count >= 5 {
+            Some([vec[idx-5], vec[idx-4], vec[idx-3], vec[idx-2], vec[idx-1]])
+        } else {
+            None
+        }
+    }
+}
+
+fn eval_most(vec: &mut [u8; 15], cond: u8) -> Option<u8> {
+    let mut max: u8 = 0;
+    for i in 2..vec.len() {
+        if vec[i] >= cond {
+            max = i as u8;
+        }
+    }
+
+    if max == 0 {
+        None
+    } else {
+        vec[max as usize] = 0;
+        Some(max)
+    }  
+}
+
+fn evaluate_hand(vec: &Vec<String>) -> HandRank {
+
+    let cards = vec;
+
+    let mut suits: [Vec<u8>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let mut ranks: [u8; 15] = [0; 15];
+    let mut card_orders: Vec<u8> = Vec::new();
+    
+    for card in cards {
+        let suit = card.chars().nth(0).unwrap();
+        let num = card.chars().nth(1).unwrap();//.to_digit(10).unwrap() as u8;
+
+        let num: u8 = match num {
+            'T' => 10,
+            'J' => 11,
+            'Q' => 12,
+            'K' => 13,
+            'A' => 14,
+            other => other.to_digit(10).unwrap() as u8,
+        };
+
+        let mut has_same: bool = false;
+        for i in 0..card_orders.len() {
+            if card_orders[i] as u8 == num {
+                has_same = true;
+            }
+        }
+        if !has_same {
+            card_orders.push(num); // copy trait을 가진 타입은 복사되고(u8, i32 등), 그렇지 않으면 소유권 이동(&str);
+        }
+        has_same = false;
+
+        ranks[num as usize] += 1;
+
+        match suit {
+            '♠' => suits[0].push(num),
+            '◆' => suits[1].push(num),
+            '♥' => suits[2].push(num),
+            '♣' => suits[3].push(num),
+            _ => panic!("What is this card~~!!"),
+        }
+    }
+
+    for suit in suits.iter_mut() {
+        suit.sort_by(|a, b| b.cmp(a));
+    }
+
+    card_orders.sort_by(|a, b| b.cmp(a));
+
+    // print Debug
+    for suit in suits.iter() {
+        print!("[");
+        for num in suit.iter() {
+            print!("{num},");
+        }
+        println!("]");
+    }
+
+    print!("[");
+    for rank in ranks.iter() {
+        print!("{rank}, ");
+    }
+    println!("]");
+
+    print!("[");
+    for card in card_orders.iter() {
+        print!("{card} ");
+    }
+    println!("]");
+
+    // 스티플
+    //println!("@@Stifle@@");
+    for suit in suits.iter() {
+        let straight = is_straight(suit);
+        if straight.is_some() {
+            let straight = straight.unwrap();
+            return HandRank::StraigntFlush(straight[0], straight[1], straight[2], straight[3], straight[4]);
+        }
+    }
+    
+    
+    // 포카드
+    //println!("@@FourCard@@");
+    let mut ranks_clone = ranks.clone();
+    let first: Option<u8>;
+    let second: Option<u8>;
+    first = eval_most(&mut ranks_clone, 4);
+    if first.is_some() {
+        second = eval_most(&mut ranks_clone, 1);
+        if second.is_some() {
+            return HandRank::FourOfCards(first.unwrap(), second.unwrap());
+        }
+    }
+
+    // 풀하우스
+    //println!("@@FullHouse@@");
+    let mut ranks_clone = ranks.clone();
+    let first: Option<u8>;
+    let second: Option<u8>;
+    first = eval_most(&mut ranks_clone, 3);
+    if first.is_some() {
+        second = eval_most(&mut ranks_clone, 2);
+        if second.is_some() {
+            return HandRank::FullHouse(first.unwrap(), second.unwrap());
+        }
+    }
+    
+
+    // 플러시
+    //println!("@@Flush@@");
+    for suit in suits {
+        if suit.len() >= 5 {
+            return HandRank::Flush(suit[0], suit[1], suit[2], suit[3], suit[4]);
+        }
+    }
+
+    // 스트레이트
+    //println!("@@Straight@@");
+    let straight = is_straight(&card_orders);
+    if straight.is_some() {
+        return HandRank::Straight(straight.unwrap()[0]);
+    }
+
+    // 트리플
+    //println!("@@Triple@@");
+    let mut ranks_clone = ranks.clone();
+    let first: Option<u8>;
+    let second: Option<u8>;
+    let third: Option<u8>;
+    first = eval_most(&mut ranks_clone, 3);
+    if first.is_some() {
+        second = eval_most(&mut ranks_clone, 1);
+        if second.is_some() {
+            third = eval_most(&mut ranks_clone, 1);
+            if third.is_some() {
+                return HandRank::ThreeofCards(first.unwrap(), second.unwrap(), third.unwrap());
+            }
+        }
+    }
+
+    // 투페어
+    //println!("@@Twopair@@");
+    let mut ranks_clone = ranks.clone();
+    let first: Option<u8>;
+    let second: Option<u8>;
+    let third: Option<u8>;
+    first = eval_most(&mut ranks_clone, 2);
+    if first.is_some() {
+        second = eval_most(&mut ranks_clone, 2);
+        if second.is_some() {
+            third = eval_most(&mut ranks_clone, 1);
+            if third.is_some() {
+                return HandRank::TwoPairs(first.unwrap(), second.unwrap(), third.unwrap());
+            }
+        }
+    }
+
+    // 페어
+    //println!("@@Pair@@");
+    let mut ranks_clone = ranks.clone();
+    let first: Option<u8>;
+    let second: Option<u8>;
+    let third: Option<u8>;
+    let fourth: Option<u8>;
+    first = eval_most(&mut ranks_clone, 2);
+    if first.is_some() {
+        second = eval_most(&mut ranks_clone, 1);
+        if second.is_some() {
+            third = eval_most(&mut ranks_clone, 1);
+            if third.is_some() {
+                fourth = eval_most(&mut ranks_clone, 1);
+                if fourth.is_some() {
+                    return HandRank::Pair(first.unwrap(), second.unwrap(), third.unwrap(), fourth.unwrap());
+                }
+            }
+        }
+    }
+
+    // 탑
+    //println!("@@Top@@");
+    let mut ranks_clone = ranks.clone();
+    let first: Option<u8>;
+    let second: Option<u8>;
+    let third: Option<u8>;
+    let fourth: Option<u8>;
+    let last: Option<u8>;
+    first = eval_most(&mut ranks_clone, 1);
+    if first.is_some() {
+        second = eval_most(&mut ranks_clone, 1);
+        if second.is_some() {
+            third = eval_most(&mut ranks_clone, 1);
+            if third.is_some() {
+                fourth = eval_most(&mut ranks_clone, 1);
+                if fourth.is_some() {
+                    last = eval_most(&mut ranks_clone, 1);
+                    if last.is_some() {
+                        return HandRank::TopCard(first.unwrap(), second.unwrap(), third.unwrap(), fourth.unwrap(), last.unwrap());
+                    }
+                }
+            }
+        }
+    }
+
+    HandRank::TopCard(0, 0, 0, 0, 0)
+
+}
+
+fn make_cards() -> Vec<String>{
+    let mut deck = Vec::new();
+    let mut rng = rand::rng();
+    
+    let suits = vec!["♠", "◆", "♥", "♣"];
+    let ranks = vec!["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
+    for suit in suits.iter() {
+        for rank in ranks.iter() {
+            deck.push(format!("{}{}", suit, rank)); // format은 참조자를 이용한다. -> 그리고 새로운 String 반환환다.
+        }
+    };
+
+    // for rank in ranks -> 소유권을 가져감
+    // for rank in ranks.iter() -> 참조만 함
+
+    deck.shuffle(&mut rng);
+
+    let mut deck: VecDeque<String> = VecDeque::from(deck);
+    let mut cards: Vec<String> = Vec::new();
+    for _ in 0..7 {
+        cards.push(deck.pop_front().unwrap());
+    }
+    cards
+}
+
+
 fn main() {
 
     let mut game = Game::new(10);
@@ -485,34 +932,19 @@ fn main() {
     game.insert_player("ByungHyeok".to_string(), 1000);
 
     game.game_start();
+    
+    // let cards = make_cards();
+    // println!("{:?}", cards);
+
+    // println!("{:?}", evaluate_hand(cards));
 
 }
 
 /* 다음 해야할 것들
 
-evaluate_hand 구현하기
+1. winner_takes_pot 구현
+2. showdown 구현
+3. 코드 리팩토링
 
 끝 */
 
-fn evaluate_hand(vec: Vec<String>) {
-    
-    // 스티플
-
-    // 포카드
-
-    // 풀하우스
-
-    // 플러시
-
-    // 스트레이트
-
-    // 트리플
-
-    // 투페어
-
-    // 페어
-
-    // 탑
-
-
-}
