@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, default};
+use std::collections::VecDeque;
 use rand::seq::SliceRandom;
 use std::io;
 
@@ -214,6 +214,8 @@ impl Game {
             return;
         }
 
+        self.set_player_idle();
+
         // Flop
         for _ in 0..3 {
             self.board.push(self.deck.pop_front().unwrap());
@@ -266,6 +268,8 @@ impl Game {
             return;
         }
 
+        self.set_player_idle();
+
         // River
         self.board.push(self.deck.pop_front().unwrap());
         self.print_board();
@@ -290,6 +294,7 @@ impl Game {
         }
 
         self.show_down();
+        self.winner_takes_pot();
 
     }
 
@@ -323,8 +328,6 @@ impl Game {
     }
 
     fn betting_phase(&mut self, is_free_flop: bool) {
-
-        
 
         let sb_idx = (self.dealer_idx + 1) % self.players.len();
         let mut cur_player_idx: usize;
@@ -554,6 +557,7 @@ impl Game {
     }
 
     fn show_down(&mut self) {
+        println!("------------showdonw!!-----------");
 
         fn compare_hands (player: &Player, winner: &Player, board: &Vec<String>) -> i32 {
             let mut player_cards = board.clone();
@@ -608,6 +612,7 @@ impl Game {
 
         self.winners = winners.len();
         for player in winners {
+            println!("{} is winner!", player.name);
             player.state = PlayerState::Winner;
         }
 
@@ -942,8 +947,6 @@ fn main() {
 
 /* 다음 해야할 것들
 
-1. winner_takes_pot 구현
-2. showdown 구현
 3. 코드 리팩토링
 
 끝 */
