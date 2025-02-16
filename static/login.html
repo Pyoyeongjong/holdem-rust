@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rust Holdem Game</title>
+    <style>
+        body {
+            display: flex; 
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f8f8f8;
+            margin: 0;
+        }
+        h1 {
+            font-size: 3rem;
+            font-weight: bold;
+            color: black;
+            margin-bottom: 20px;
+        }
+        .form-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 300px;
+        }
+        input {
+            padding: 10px;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .button-container {
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            padding: 5px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 50%;
+        }
+        .login-btn {
+            background-color: #007bff;
+            color: white;
+        }
+        .signup-btn {
+            background-color: #28a745;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>Rust Holdem Game</h1>
+    <div class="form-container">
+        <input type="text" placeholder="아이디" />
+        <input type="password" placeholder="비밀번호" />
+        <div class="button-container">
+            <button class="login-btn">로그인</button>
+            <button class="signup-btn">회원가입</button>
+        </div>
+    </div>
+</body>
+</html>
+

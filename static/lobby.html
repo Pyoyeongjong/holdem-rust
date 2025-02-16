@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>홀덤 게임 방 목록</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f8f8f8;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: black;
+            margin: 20px 0;
+        }
+        .user-info-inline {
+            font-size: 1rem;
+            font-weight: bolder;
+            color: rgb(95, 83, 12);
+            margin-bottom: 10px;
+        }
+        .room-list {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 600px;
+        }
+        .room {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 30px;
+            background-color: white;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 1.2rem;
+            cursor: pointer;
+            position: relative;
+        }
+        .room:hover {
+            background-color: #e9ecef;
+        }
+        .room-number {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .room-info {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        .bb-size {
+            position: absolute;
+            top: 5px;
+            right: 10px;
+            font-size: 0.8rem;
+            color: rgb(48, 116, 99);
+        }
+        .participants {
+            position: absolute;
+            bottom: 5px;
+            right: 10px;
+            font-size: 0.8rem;
+            color: gray;
+        }
+    </style>
+</head>
+<body>
+    <h1>홀덤 게임 방 목록</h1>
+    <span class="user-info-inline">Player1: 5000 Chips</span>
+    <div class="room-list">
+        <div class="room">
+            <span class="room-number">1</span>
+            <div class="room-info">방 1</div>
+            <span class="bb-size">BB: 100</span>
+            <span class="participants">1/6</span>
+        </div>
+        <div class="room">
+            <span class="room-number">2</span>
+            <div class="room-info">방 2</div>
+            <span class="bb-size">BB: 200</span>
+            <span class="participants">2/6</span>
+        </div>
+        <div class="room">
+            <span class="room-number">3</span>
+            <div class="room-info">방 3</div>
+            <span class="bb-size">BB: 300</span>
+            <span class="participants">3/6</span>
+        </div>
+        <div class="room">
+            <span class="room-number">4</span>
+            <div class="room-info">방 4</div>
+            <span class="bb-size">BB: 400</span>
+            <span class="participants">4/6</span>
+        </div>
+        <div class="room">
+            <span class="room-number">5</span>
+            <div class="room-info">방 5</div>
+            <span class="bb-size">BB: 500</span>
+            <span class="participants">5/6</span>
+        </div>
+    </div>
+</body>
+</html>

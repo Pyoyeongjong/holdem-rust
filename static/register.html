@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>회원가입 - Rust Holdem Game</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f8f8f8;
+            margin: 0;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: black;
+            margin-bottom: 20px;
+        }
+        .form-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 300px;
+        }
+        input {
+            padding: 10px;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px;
+            font-size: 1rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            background-color: #28a745;
+            color: white;
+        }
+        .back-btn {
+            background-color: #6c757d;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>회원가입</h1>
+    <div class="form-container">
+        <input type="text" placeholder="아이디" />
+        <input type="password" placeholder="비밀번호" />
+        <input type="password" placeholder="비밀번호 확인" />
+        <input type="email" placeholder="이메일" />
+        <button>회원가입</button>
+        <button class="back-btn" onclick="window.location.href='index.html'">뒤로 가기</button>
+    </div>
+</body>
+</html>
