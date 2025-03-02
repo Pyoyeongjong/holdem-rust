@@ -380,11 +380,7 @@ impl Game {
 
         let is_allin = self.players[idx].raise(size);
         self.pot += size;
-
-        if is_allin {
-            self.have_extra_chips -= 1;
-        }
-
+        if is_allin { self.have_extra_chips -= 1; }
         self.players[idx].player_pot
     }
 
@@ -475,16 +471,12 @@ impl Game {
                 winners.push(player);
             } else {
                 match compare_hands(player, winners[0], &board) {
-                    1 =>{ // 플레이어가 이김
+                    1 => { // 플레이어가 이김
                         winners = Vec::new();
                         winners.push(player);
                     },
-                    0 =>{ // 찹
-                        winners.push(player);
-                    },
-                    _ => {
-
-                    }
+                    0 => { winners.push(player);}, // 찹
+                    _ => {}
                 }
             }
         }
