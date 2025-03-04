@@ -54,6 +54,14 @@
             color: white;
         }
     </style>
+    <script>
+        function goToRegister() {
+            window.location.href = "/register";
+        }
+        function goToLobby() {
+            window.location.href = "/lobby";
+        }
+    </script>
 </head>
 <body>
     <h1>Rust Holdem Game</h1>
@@ -61,8 +69,8 @@
         <input type="text" placeholder="아이디" />
         <input type="password" placeholder="비밀번호" />
         <div class="button-container">
-            <button class="login-btn">로그인</button>
-            <button class="signup-btn">회원가입</button>
+            <button class="login-btn" onclick="goToLobby()">로그인</button>
+            <button class="signup-btn" onclick="goToRegister()">회원가입</button>
         </div>
     </div>
 </body>

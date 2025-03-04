@@ -156,9 +156,14 @@
         .player5 { top: 170px; right: -140px; }
         .player6 { top: 0px; right: -140px; }
     </style>
+    <script>
+        function goToLobby() {
+            window.location.href = "/lobby";
+        }
+    </script>
 </head>
 <body>
-    <button class="exit-button">나가기</button>
+    <button class="exit-button" onclick="goToLobby()">나가기</button>
     <div class="game-title">홀덤 게임 방</div>
     <div class="game-container">
         <div class="table">
