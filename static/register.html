@@ -53,8 +53,49 @@
         }
     </style>
     <script>
+        let check_dup = false;
+
         function goToLogin() {
             window.location.href = "/login";
+        }
+
+        async function checkRegister() {
+
+            const id = document.getElementById("username").value;
+            const pw = document.getElementById("pw").value;
+            const pw2 = document.getElementById("pw2").value;
+
+            if (!check_dup) {
+                alert("아이디 중복체크 하삼!");
+                return;
+            }
+
+            if (pw !== pw2) {
+                alert("비밀번호 다름!");
+                return;
+            }
+
+            try {
+                const response = await fetch("/api/register", {
+                    method: "POST",
+                    header: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        id: id,
+                        pw: pw
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    alert("회원가입 완료!!");
+                    goToLogin();
+                } else {
+                    alert("회원가입 안됨 ㅠㅠ!");
+                }
+            } catch (err) {
+                console.error("Error checking username:", error);
+                alert("서버 오류가 발생했습니다.");
+            }
         }
         
         async function checkDuplicate() {
@@ -74,10 +115,14 @@
                 const result = await response.json(); // json을 dictionary화 시켜주는건가
                 if (result.available) {
                     alert("사용 가능한 아이디입니다!");
+                    check_dup = true;
+                    document.getElementById("check_button").disabled = true;
+                    document.getElementById("check_button").style.opacity = "0.5";
+                    document.getElementById("username").disabled = true;
                 } else {
                     alert("이미 사용 중인 아이디입니다!");
                 }
-            } catch {error} {
+            } catch (error) {
                 console.error("Error checking username:", error);
                 alert("서버 오류가 발생했습니다.");
             }
@@ -88,11 +133,11 @@
     <h1>회원가입</h1>
     <div class="form-container">
         <input type="text" id="username" placeholder="아이디" />
-        <button class="check-btn" onclick="checkDuplicate()">중복 확인</button>
-        <input type="password" placeholder="비밀번호" />
-        <input type="password" placeholder="비밀번호 확인" />
-        <input type="email" placeholder="이메일" />
-        <button>회원가입</button>
+        <button class="check-btn" id="check_button" onclick="checkDuplicate()">중복 확인</button>
+        <input type="password" id="pw" placeholder="비밀번호" />
+        <input type="password" id="pw2" placeholder="비밀번호 확인" />
+        <input type="email" placeholder="이메일 (선택)" />
+        <button id="register_button" onclick="checkRegister()">회원가입</button>
         <button class="back-btn" onclick="goToLogin()">뒤로 가기</button>
     </div>
 </body>

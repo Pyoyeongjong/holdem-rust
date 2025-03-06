@@ -14,6 +14,8 @@ static NOTNUMERIC: &[u8] = b"Number field is not numeric";
 
 use serde_json::{json, Value};
 
+use serde::{Deserialize, Serialize};
+
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, Empty};
 
@@ -29,11 +31,9 @@ use hyper::{Method, StatusCode};
 use std::fs;
 
 fn serve_static_file(path: &str) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
-    // let file = fs::read(path).unwrap_or_else(|_| b"Error Occured".to_vec());
-    // Ok(Response::new(full(Bytes::from(file))))
 
     let login_html: Vec<u8> = fs::read(path)
-                .unwrap_or_else(|e| {
+                .unwrap_or_else(|_| {
                     b"Error Occured".to_vec()
                 });
                 
@@ -45,7 +45,60 @@ async fn serve_function(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
 
+    //GET / POST 차이 == 캐싱 여부 & 보안
     match (req.method(), req.uri().path()) {
+
+        (&Method::GET, "/api/lobby/get-rooms-info") => {
+            Ok(Response::new(empty()))
+        },
+
+        (&Method::GET, "/api/lobby/get-player-chips") => {
+            Ok(Response::new(empty()))
+        },
+
+        (&Method::POST, "/api/lobby/create-rooms") => {
+            Ok(Response::new(empty()))
+        }
+
+        (&Method::POST, "/api/register") => {
+            let b = req.collect().await?.to_bytes();
+
+            let params: Value = match serde_json::from_slice(&b) {
+                Ok(val) => val,
+                Err(_) => {
+                    return Ok(Response::builder()
+                    .status(400)
+                    .body(full(MISSING))
+                    .unwrap());
+                }
+            };
+            // JSON을 그대로 to_string 하면 JSON 문자열이 쌍따옴표 붙은 상태로 그대로 string 됨
+            let new_user = User {
+                id: params["id"].as_str().unwrap().to_string(),
+                pw: params["pw"].as_str().unwrap().to_string(),
+                email: params["email"].as_str().unwrap_or("").to_string(),
+                chips: 1000
+            };
+
+            match save_user(new_user) {
+                Ok(()) => {
+                    return Ok(Response::builder()
+                    .status(200)
+                    .body(full(json!({
+                        "success": true,
+                    }).to_string()))
+                    .unwrap());
+                },
+                Err(_) => {
+                    return Ok(Response::builder()
+                    .status(400)
+                    .body(full(json!({
+                        "success": false,
+                    }).to_string()))
+                    .unwrap());
+                }
+            }
+        }, 
 
         (&Method::POST, "/api/check-username") => { // JSON parsing Document Advanced에 있었다. 잘 찾아봐라
 
@@ -61,11 +114,59 @@ async fn serve_function(
                 }
             };
 
-            let id = params["id"].as_str().unwrap_or_default().to_string();
+            let id = params["id"].as_str().unwrap_or("").to_string();
+            let availalble = match is_user_exist(&id) {
+                Ok(true) => false,
+                _ => true
+            };
 
             let res = json!({
-                "available": !find_one(&id).unwrap(),
+                "available": availalble
             });
+
+            Ok(Response::new(full(res.to_string())))
+        },
+
+        (&Method::POST, "/api/login") => {
+
+            let b = req.collect().await?.to_bytes();
+
+            let params: Value = match serde_json::from_slice(&b) {
+                Ok(val) => val,
+                Err(_) => {
+                    return Ok(Response::builder()
+                    .status(400)
+                    .body(full(MISSING))
+                    .unwrap());
+                }
+            };
+
+            
+            let id = params["id"].as_str().unwrap_or_default().to_string();
+            let pw = params["pw"].as_str().unwrap_or_default().to_string();
+
+            let res: Value;
+            match find_user(&id, &pw) {
+                Ok(Some(_)) => {
+                    res = json!({
+                        "success": true,
+                        "access_token": "1234"
+                    });
+                },
+                Ok(None) => {
+
+                    res = json!({
+                        "success": false,
+                    });
+                    println!("There is no user you are finding.");
+                },
+                Err(_) => {
+                    res = json!({
+                        "success": false,
+                    });
+                    println!("Server Error");
+                }
+            };
 
             Ok(Response::new(full(res.to_string())))
         },
@@ -76,7 +177,7 @@ async fn serve_function(
         (&Method::GET, "/game") => serve_static_file("../static/gmae.html"),
 
         _ => {
-            println!("NOT FOUND");
+            println!("API NOT FOUND");
             let mut not_found = Response::new(Full::new(Bytes::new()));
             *not_found.status_mut() = StatusCode::NOT_FOUND;
             Ok(Response::new(not_found.boxed()))
@@ -84,15 +185,17 @@ async fn serve_function(
     }
 }
 
+// 빈 응답문 BoxBody를 생성할 때 사용
 fn empty() -> BoxBody<Bytes, Infallible> {
     Empty::<Bytes>::new().boxed()
 }
 
+// 일반적인 응답문 BoxBody를 생성할 때 사용
 fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, Infallible> {
     Full::new(chunk.into()).boxed()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct User {
     id: String,
     pw: String,
@@ -117,31 +220,24 @@ fn create_db() -> Result<()> {
     Ok(())
 }
 
-fn save_user(id: String, pw: String, email: String) -> Result<()> {
+fn save_user(user: User) -> Result<(), rusqlite::Error> {
     let path = PATH;
     let conn = Connection::open(path)?;
 
-    let me = User {
-        id: id,
-        pw: pw,
-        email: email,
-        chips: 1000,
-    };
-
-    if find_one(&me.id)? {
-        println!("User {} is already exist!", &me.id);
+    if is_user_exist(&user.id)? {
+        println!("User {} is already exist!", &user.id);
         return Ok(());
     }
     
     conn.execute(
         "INSERT INTO user (id, pw, email, chips) VALUES (?1, ?2, ?3, ?4)",
-        (&me.id, &me.pw, &me.email, &me.chips),
+        (&user.id, &user.pw, &user.email, &user.chips),
     )?;
 
     Ok(())
 }
 
-fn find_one(id: &String) -> Result<bool, rusqlite::Error> {
+fn is_user_exist(id: &String) -> Result<bool, rusqlite::Error> {
 
     let path = PATH;
     let conn = Connection::open(path)?;
@@ -153,7 +249,32 @@ fn find_one(id: &String) -> Result<bool, rusqlite::Error> {
     let count: Option<i32> = stmt.query_row(params![id], |row| row.get(0))
         .optional()?;
 
-    Ok(count.unwrap_or(0) > 0)
+    let res = count.unwrap_or(0) > 0;
+    Ok(res)
+}
+
+// Option을 잘 사용하는게 중요하다! - 없을 수도 있는
+fn find_user(id: &String, pw: &String) -> Result<Option<User>, rusqlite::Error> {
+
+    let path = PATH;
+    let conn = Connection::open(path)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, pw, chips, email FROM user WHERE id = ?1 AND pw = ?2"
+    )?;
+
+    println!("{} {}", id, pw);
+    // 클로저 사용법 중요한 예시인듯
+    let user = stmt.query_row(params![id, pw], |row| {
+        Ok(User {
+            id: row.get(0)?,
+            pw: row.get(1)?,
+            chips: row.get(2)?,
+            email: row.get(3)?,
+        })
+    }).optional();
+
+    user
 }
 
 #[tokio::main]
@@ -162,9 +283,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
 
     create_db()?;
-    save_user("pyjong1999".to_string(), "asdfg1213".to_string(), "pyjong1999@gmail.com".to_string())?;
-    save_user("pyjong1998".to_string(), "asdfg122".to_string(), "pyjong1999@naver.com".to_string())?;
-    save_user("pyjong1997".to_string(), "asdfg123".to_string(), "pyjong1999@gmail.com".to_string())?;
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -193,10 +311,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 /* 다음 해야할 것들
 
-    방 하나 있는 홀덤 게임 고고
-    1. TcpListener로 Html 뿌리기
-    2. 로그인 / 회원가입 기능 구현하기
+    홀덤 게임
 
+    
+    2  로비 api 만들기 ( 방 생성, 방 정보 가져오기, 회원 칩 개수 )
+    3. 게임 수에 따라서 로비에 방 개수가 뜨게 만들기
+    4. 로비 및 게임은 인증한 유저만 들어갈 수 있도록 만들기
+
+    5. API 라우팅 / 모듈화 분리 (크다 싶으면 언제든지 고고)
+
+    6. 비밀번호 해쉬화 ( 보안 문제 )
+    7. 로비 및 게임은 인증한 유저만 들어갈 수 있도록 만들기
+    
+    [ 게임 내 로직 구현하기 ] - 웹소켓 이용하기
 
     1. 랜덤 입장 기능 구현 
     2. 조건에 맞는 방 찾기(BB 제한, 현재 인원 수, 게임 번호 등)

@@ -61,15 +61,55 @@
         function goToLobby() {
             window.location.href = "/lobby";
         }
+
+        async function checkLogin() {
+            const id = document.getElementById("id").value;
+            const pw = document.getElementById("pw").value;
+
+            if (!id) {
+                alert("아이디를 입력하세요!");
+                return;
+            }
+
+            if (!pw) {
+                alert("비밀번호를 입력하세요!");
+                return;
+            }
+
+            try {
+                const response = await fetch("/api/login", {
+                    method: "POST",
+                    header: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        id: id,
+                        pw: pw
+                    })
+                });
+
+                const result = await response.json();
+
+                console.log(result);
+
+                if (result.success == true) {
+                    alert("로그인 ok!");
+                    goToLobby();
+                } else {
+                    alert("로그인 실패!");
+                }
+            } catch (error) {
+                console.error("Error checking username:", error);
+                alert("서버 오류가 발생했습니다.");
+            }
+        }
     </script>
 </head>
 <body>
     <h1>Rust Holdem Game</h1>
     <div class="form-container">
-        <input type="text" placeholder="아이디" />
-        <input type="password" placeholder="비밀번호" />
+        <input type="text" id="id" placeholder="아이디" />
+        <input type="password" id="pw" placeholder="비밀번호" />
         <div class="button-container">
-            <button class="login-btn" onclick="goToLobby()">로그인</button>
+            <button class="login-btn" onclick="checkLogin()">로그인</button>
             <button class="signup-btn" onclick="goToRegister()">회원가입</button>
         </div>
     </div>
