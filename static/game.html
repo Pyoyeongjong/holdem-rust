@@ -157,6 +157,37 @@
         .player6 { top: 0px; right: -140px; }
     </style>
     <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            if (window.location.pathname === "/game") {
+                console.log("Lets go");
+                connectWebSocket();
+            }
+        })
+
+        let socket;
+
+        function connectWebSocket() {
+            socket = new WebSocket("ws://127.0.0.1:8080/socket");
+
+            socket.onopen = () => {
+                console.log("웹소켓 연결됨!");
+                document.getElementById("status").innerText = "연결 종료";
+            }
+
+            socket.onerror = (error) => {
+                console.error("WebSocket 오류:", error);
+            };
+        }
+
+        function sendMessage() {
+            const input = document.getElementById("messageInput");
+            const message = input.value.trim();
+            if (message) {
+                socket.send(JSON.stringify({"type": message}));
+                input.value = "";
+            }
+        }
+
         function goToLobby() {
             window.location.href = "/lobby";
         }
@@ -164,6 +195,12 @@
 </head>
 <body>
     <button class="exit-button" onclick="goToLobby()">나가기</button>
+
+    <p id="status">웹소켓 연결 중...</p>
+    <input type="text" id="messageInput" placeholder="메세지 입력 ㄱㄱ">
+    <button onclick="sendMessage()">보내기</button>
+    <ul id="message"></ul>
+
     <div class="game-title">홀덤 게임 방</div>
     <div class="game-container">
         <div class="table">
@@ -233,11 +270,11 @@
         </div>
         <div class="controls">
             <div class="button-group">
-                <button>Check</button>
-                <button>Call</button>
-                <button>Raise</button>
-                <button>All-in</button>
-                <button>Fold</button>
+                <button id="check">Check</button>
+                <button id="call">Call</button>
+                <button id="raise">Raise</button>
+                <button id="allin">All-in</button>
+                <button id="fold">Fold</button>
             </div>
             <div class="extra-controls">
                 <label><input type="checkbox"> 나가기 예약</label>
