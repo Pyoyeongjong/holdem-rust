@@ -1,6 +1,14 @@
+use std::net::SocketAddr;
+
+use tokio::net::TcpStream;
+
+use hyper::{Request, body::Incoming};
+
 pub struct Player {
     pub name: String,
     pub chips: u32,
+    pub stream: Option<TcpStream>,
+    pub addr: Option<SocketAddr>,
     pub state: PlayerState,
     pub hands: Option<(String, String)>, // 있을 수도 있고 없을 수도 있으니까
     pub player_pot: u32, // 변수 명 바꾸고 싶은데
@@ -24,6 +32,8 @@ impl Player {
         Player {
             name,
             chips,
+            stream: None, 
+            addr: None,
             state: PlayerState::Waiting,
             hands: None,
             player_pot: 0,

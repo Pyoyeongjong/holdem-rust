@@ -3,8 +3,12 @@
 // 프로젝트 내부 모듈
 mod game;
 mod player;
+mod room;
 use game::Game;
+use room::{Room, find_room};
+// use player::make_player_by_http;
 
+use rusqlite::fallible_iterator::Unwrap;
 use tokio::net::{TcpStream, TcpListener};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -22,6 +26,8 @@ use bytes::Bytes;
 
 use futures_channel::mpsc::{unbounded, UnboundedSender};
 use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::Message;
 
 use std::{
     convert::Infallible,
@@ -33,13 +39,32 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use bcrypt::{verify, DEFAULT_COST, hash};
+
+use jsonwebtoken::{encode, decode, Header, Algorithm, Validation, EncodingKey, DecodingKey};
+use chrono::{DateTime, Duration, TimeDelta, TimeZone, Utc};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: usize,
+}
 
 use rusqlite::{params, Connection, OptionalExtension, Result};
+
+type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
+type Tx = UnboundedSender<Message>;
+type Body = http_body_util::Full<hyper::body::Bytes>;
 
 const PATH: &str = "./my_db.db3";
 static INDEX: &[u8] = b"<html><body><form action=\"post\" method=\"post\">Name: <input type=\"text\" name=\"name\"><br>Number: <input type=\"text\" name=\"number\"><br><input type=\"submit\"></body></html>";
 static MISSING: &[u8] = b"Missing field";
 static NOTNUMERIC: &[u8] = b"Number field is not numeric";
+const SERVER_SECRET: &str = "734c61eebdb501f08ced87f8173ea616e12e9c57036764c71e14f4bc1caf1070";
+
+
+// unsafe!! 권장되지 않음
+// static mut ROOMS: Arc<Mutex<Vec<Room>>> = Arc::new(Mutex::new(Vec::new()));
 
 fn serve_static_file(path: &str) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
 
@@ -51,84 +76,16 @@ fn serve_static_file(path: &str) -> Result<Response<BoxBody<Bytes, Infallible>>,
     Ok(Response::new(full(Bytes::from(login_html))))
 }
 
-// 한 번에 끝낼 수 있는 작업들은 async를 안붙여도 됨.
-fn handle_player(json: Value) {
-    println!("Hello handle_player!");
-}
-
-fn handle_game(json: Value) {
-    println!("Hello handle_game!");
-}
-
-fn handle_disconnect(json: Value) {
-    println!("Hello handle_disconnect");
-}
-
-async fn handle_connection(
-    peer_map: PeerMap, 
-    ws_stream: WebSocketStream<TokioIo<Upgraded>>,
-    addr: SocketAddr,
-) {
-    println!("Websocket connection established: {}", addr);
-    let (tx, rx) = unbounded();
-    peer_map.lock().unwrap().insert(addr, tx);
-
-    // outgoing - 서버가 쓰기 전용
-    // incoming - 서버가 읽기 전용
-    let (outgoing, incoming) = ws_stream.split();
-
-    // Future 생성
-    let ws_service = incoming.try_for_each(|msg| {
-        if let Ok(text) = msg.to_text() {
-            if let Ok(json) = serde_json::from_str::<Value>(text) {
-                match json["type"].as_str() {
-                    Some("player") => handle_player(json),
-                    Some("game") => handle_game(json),
-                    Some("disconnect") => handle_disconnect(json),
-                    _ => {
-                        println!("Unknown message type");
-                    },            
-                }
-            }
-        }
-
-        future::ok(())
-    });
-
-    let ws_result_forward= rx.map(Ok).forward(outgoing);
-
-    // Future
-    // return type을 런타임에 알 수 있는 함수
-
-    // 다른 피어로부터 채널로 전달된 메세지를 읽어 webSocket의 쓰기 싱크로 전달한다.
-    // map(Ok) => 내용을 Ok로 묶어 forward가 처리할 수 있도록 한다.
-
-    // Future는 한 번 생성되면 메모리 상에서 이동하지 않아야 하므로
-    // 매크로를 통해 두 future를 스택에 고정한다.
-    pin_mut!(ws_service, ws_result_forward);
-
-    // 두 future를 동시에 실행
-    // 하나라도 완료되면 연결 끊어진 것으로 간주
-    // future는 polling 해야 실행되는데, await을 통해 자동 폴링이 된다.
-    future::select(ws_service, ws_result_forward).await;
-
-    println!("{} disconnected", &addr);
-    peer_map.lock().unwrap().remove(&addr);
-}
 
 // Infallable 은 절대 실패할 수 없다는 열거형 값이래요
 async fn handle_request(
     peer_map: PeerMap,
     mut req: Request<Incoming>,
     addr: SocketAddr,
+    rooms: Arc<Mutex<Vec<Room>>>,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
 
     println!("The request's path is: {}", req.uri().path());
-    // println!("The request's headers are:");
-
-    // for (ref header, _value) in req.headers() {
-    //     println!("* {}", header);
-    // }
 
     let upgrade = HeaderValue::from_static("Upgrade");
     let websocket = HeaderValue::from_static("websocket");
@@ -141,6 +98,7 @@ async fn handle_request(
         key.map(|k| derive_accept_key(k.as_bytes()));
 
     // 웹소켓 연결인가 검증하는 과정
+    // http 호환성을 위해 하나를 선택해야 되는데, 연결 자체는 변경을 유발하지 않으므로 GET
     if req.method() == Method::GET
         // && req.version() < Version::HTTP_11
         // && headers
@@ -164,28 +122,34 @@ async fn handle_request(
         // && !key.is_none()
         && req.uri().path() == "/socket"
     {
-        // 웹소켓 연결
-        let ver = req.version();
-        tokio::spawn(async move {
-            match hyper::upgrade::on(&mut req).await {
-                Ok(upgraded) => {
-                    let upgraded = TokioIo::new(upgraded);
-                    handle_connection(
-                        peer_map,
-                        WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await,
-                        addr,
-                    )
-                    .await;
-                },
-                Err(e) => println!("upgrade error: {}", e),
-            }
-        });
+        // let mut rooms = rooms.lock().unwrap();
+        
+        // // 방 번호에 해당하는 방 찾기
+        // let mut room = find_room(id, &mut rooms);
+        // if room.is_none() {
+        //     // 방이 없음 && 만드려고 했으면 생성
+            
+        //     // 아니면 에러
+        // }
 
-        // handshake OK sign을 보내야함
+        // let mut room = room.unwrap();
+        // let ver = req.version();
+
+        // // 방에 남는 자리 있으면
+        // if room.can_add_player() {
+        //     // 방을 통해 웹소켓 연결
+        //     let player = make_player_by_http(&req);
+        //     room.add_player(player, req);
+        // } else {
+        //     // 방이 꽉 찼다는 에러!!
+        //     return ERR
+        // }
+
+        // // handshake OK sign을 보내야함
         let mut res = Response::new(empty());
 
         *res.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-        *res.version_mut() = ver;
+        // *res.version_mut() = ver;
         res.headers_mut().append(CONNECTION, upgrade);
         res.headers_mut().append(UPGRADE, websocket);
         res.headers_mut().append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
@@ -200,12 +164,56 @@ async fn handle_request(
         // Websocket 제외 일반 통신
         match (req.method(), req.uri().path()) {
 
-            (&Method::GET, "/api/lobby/get-rooms-info") => {
-                Ok(Response::new(empty()))
+            (&Method::GET, "/api/lobby/get-player-chips") => {
+
+
+                let header_map = req.headers();
+                // expect는 panic 발생용! 보통 unwrap_or을 많이씀
+                let access_token = header_map.get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .expect("Access Token is not here");
+
+                println!("{access_token}");
+
+                let id = verify_token(access_token, SERVER_SECRET).expect("id verify failed!");
+
+                println!("{id}");
+
+                let chips = get_player_chips(&id).expect("Failed to get chips");
+                println!("{chips}");
+
+                let res = json!({
+                    "chips": chips
+                });
+    
+                Ok(Response::new(full(res.to_string())))
             },
 
-            (&Method::GET, "/api/lobby/get-player-chips") => {
-                Ok(Response::new(empty()))
+            (&Method::GET, "/api/lobby/get-rooms-info") => {
+
+                println!("Hello get rooms info!");
+
+                let header_map = req.headers();
+                // expect는 panic 발생용! 보통 unwrap_or을 많이씀
+                let access_token = header_map.get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .expect("Access Token is not here");
+
+                println!("{access_token}");
+
+                let id = verify_token(access_token, SERVER_SECRET).expect("id verify failed!");
+
+                println!("{id}");
+
+                let res = json!({
+                    "rooms": [
+                        {"id": 1, "bb": 100, "participants": 1, "max_participants": 6},
+                        {"id": 2, "bb": 200, "participants": 3, "max_participants": 6},
+                        {"id": 3, "bb": 300, "participants": 5, "max_participants": 6},
+                    ]
+                });
+
+                Ok(Response::new(full(res.to_string())))
             },
 
             (&Method::POST, "/api/lobby/create-rooms") => {
@@ -229,7 +237,8 @@ async fn handle_request(
                     id: params["id"].as_str().unwrap().to_string(),
                     pw: params["pw"].as_str().unwrap().to_string(),
                     email: params["email"].as_str().unwrap_or("").to_string(),
-                    chips: 1000
+                    chips: 1000,
+                    refresh_token: None,
                 };
 
                 match save_user(new_user) {
@@ -292,30 +301,40 @@ async fn handle_request(
                         .unwrap());
                     }
                 };
-
                 
                 let id = params["id"].as_str().unwrap_or_default().to_string();
                 let pw = params["pw"].as_str().unwrap_or_default().to_string();
 
-                let res: Value;
+                let mut res: Value = json!({
+                    "success": false,
+                });
                 match find_user(&id, &pw) {
                     Ok(Some(_)) => {
+                        let expiration = Utc::now()
+                            .checked_add_signed(Duration::seconds(3600))
+                            .expect("valid timestamp")
+                            .timestamp() as usize;
+
+                        // token 만들기
+                        let claim: Claims = Claims {
+                            sub: id,
+                            exp: expiration,
+                        };
+
+                        // as_ref == Option<T> 를 Option<&T>로 변경
+                        let token = encode(&Header::default(), &claim, 
+                            &EncodingKey::from_secret(SERVER_SECRET.as_ref())).unwrap();
+                            
+                            
                         res = json!({
                             "success": true,
-                            "access_token": "1234"
+                            "access_token": token,
                         });
                     },
                     Ok(None) => {
-
-                        res = json!({
-                            "success": false,
-                        });
                         println!("There is no user you are finding.");
                     },
                     Err(_) => {
-                        res = json!({
-                            "success": false,
-                        });
                         println!("Server Error");
                     }
                 };
@@ -359,6 +378,7 @@ struct User {
     pw: String,
     email: String,
     chips: u32,
+    refresh_token: Option<String>,
 }
 
 fn create_db() -> Result<()> {
@@ -371,7 +391,8 @@ fn create_db() -> Result<()> {
             id      TEXT    PRIMARY KEY,
             pw      TEXT    NOT NULL,
             email   TEXT    NOT NULL,
-            chips   INTEGER NOT NULL
+            chips   INTEGER NOT NULL,
+            refresh_token   TEXT
         )",
          (),
     )?;
@@ -387,9 +408,17 @@ fn save_user(user: User) -> Result<(), rusqlite::Error> {
         return Ok(());
     }
     
+    let hashed_pw = match hash(&user.pw, DEFAULT_COST) {
+        Ok(hp) => hp,
+        Err(_) => {
+            println!("Failed to Hash password!");
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+    };
+
     conn.execute(
-        "INSERT INTO user (id, pw, email, chips) VALUES (?1, ?2, ?3, ?4)",
-        (&user.id, &user.pw, &user.email, &user.chips),
+        "INSERT INTO user (id, pw, email, chips, refresh_token) VALUES (?1, ?2, ?3, ?4, ?5)",
+        (&user.id, &hashed_pw, &user.email, &user.chips, &user.refresh_token),
     )?;
 
     Ok(())
@@ -411,6 +440,12 @@ fn is_user_exist(id: &String) -> Result<bool, rusqlite::Error> {
     Ok(res)
 }
 
+fn get_player_chips(id: &String) -> Result<usize, rusqlite::Error> {
+    let user = find_user_by_id(id).expect("find_user_by_id: can't find player").expect("222");
+    let chips = user.chips as usize;
+    Ok(chips)
+}
+
 // Option을 잘 사용하는게 중요하다! - 없을 수도 있는
 fn find_user(id: &String, pw: &String) -> Result<Option<User>, rusqlite::Error> {
 
@@ -418,38 +453,58 @@ fn find_user(id: &String, pw: &String) -> Result<Option<User>, rusqlite::Error> 
     let conn = Connection::open(path)?;
 
     let mut stmt = conn.prepare(
-        "SELECT id, pw, chips, email FROM user WHERE id = ?1 AND pw = ?2"
+        "SELECT id, pw, chips, email, refresh_token FROM user WHERE id = ?1"
     )?;
-
-    println!("{} {}", id, pw);
+    
     // 클로저 사용법 중요한 예시인듯
-    let user = stmt.query_row(params![id, pw], |row| {
-        Ok(User {
-            id: row.get(0)?,
-            pw: row.get(1)?,
-            chips: row.get(2)?,
-            email: row.get(3)?,
-        })
+    
+    let user = stmt.query_row(params![id], |row| {
+        let stored_pw: String = row.get(1)?;
+        if verify(pw, &stored_pw).unwrap_or(false) {
+            Ok(User {
+                id: row.get(0)?,
+                pw: stored_pw.clone(),
+                chips: row.get(2)?,
+                email: row.get(3)?,
+                refresh_token: row.get(4)?,
+            })
+        } else {
+            // 에러 처리해서 optional 통과했을 때 Ok(None)이 되도록
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        }
     }).optional();
 
     user
 }
 
-use tokio_tungstenite::{
-    tungstenite::{
-        handshake::derive_accept_key,
-        protocol::{Message, Role},
-    },
-    WebSocketStream,
-};
+fn find_user_by_id(id: &String) -> Result<Option<User>, rusqlite::Error> {
 
-type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
-type Tx = UnboundedSender<Message>;
-type Body = http_body_util::Full<hyper::body::Bytes>;
+    let path = PATH;
+    let conn = Connection::open(path)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, pw, chips, email, refresh_token FROM user WHERE id = ?1"
+    )?;
+    
+    // 클로저 사용법 중요한 예시인듯
+    
+    let user = stmt.query_row(params![id], |row| {{
+        Ok(User {
+            id: row.get(0)?,
+            pw: row.get(1)?,
+            chips: row.get(2)?,
+            email: row.get(3)?,
+            refresh_token: row.get(4)?,
+        })
+    }}).optional();
+
+    user
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
+    let rooms: Arc<Mutex<Vec<Room>>> = Arc::new(Mutex::new(Vec::new()));
     let state = PeerMap::new(Mutex::new(HashMap::new()));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
@@ -460,13 +515,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (stream, addr) = listener.accept().await?;
         let state = state.clone();
+        let rooms = rooms.clone();
 
         // tokio::task::spawn은 tokio::spawn을 재포장한 것일 뿐이라 기능적으로 동일함
         tokio::spawn(async move {
             // hyper는 기본적으로 tokio::net::TcpStream을 바로 사용할 수 없어서
             // 호환성을 입히기 위해 TokioIo를 사용
             let io = TokioIo::new(stream);
-            let service = service_fn(move |req| handle_request(state.clone(), req, addr));
+            let service = service_fn(move |req| handle_request(state.clone(), req, addr, rooms.clone()));
             // with_upgrades를 통해 기본 http 통신을 다른 프로토콜로 덮는다 생각하자
             let conn = http1::Builder::new()
                 .serve_connection(io, service)
@@ -479,30 +535,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-// let mut game = Game::new(10);
-// game.insert_player("Steve".to_string(), 1000);
-// game.insert_player("Peter".to_string(), 1000);
-// game.insert_player("ByungHyeok".to_string(), 1000);
-
-// loop {
-//     game.game_start();
-// }
+// 아이디 반환
+fn verify_token(token: &str, server_key: &str) -> Option<String> {
+    let decode_key = DecodingKey::from_secret(server_key.as_ref());
+    let token_message = decode::<Claims>(token, &decode_key, &Validation::new(Algorithm::HS256));
+    match token_message {
+        Ok(token) => Some(token.claims.sub),
+        Err(_) => {
+            println!("Verify token failed");
+            None
+        }
+    }
+}
 
 /* 다음 해야할 것들
 
-    홀덤 게임
-    게임 api를 먼저 구현해야 할 듯 합니다
-
-    웹소켓 연결 카피코딩 했는데, 잘 동작하는지 보려면 좀 봐야할 듯???
+    1. 로비 및 게임은 인증한 유저만 들어갈 수 있도록 만들기 (생성한 토큰을 페이지 들어갈 때마다 인증을 해야하는지가 의문이다.. 일단 패스)
+        그리고 snowmen_fight에서는 라우팅으로 화면 전환하지 않고 게임씬으로 전환하는데.. 나도 url을 통한 의도적인 화면 전환을 막아야하나 싶음
     
-    2  로비 api 만들기 ( 방 생성, 방 정보 가져오기, 회원 칩 개수 )
-    3. 게임 수에 따라서 로비에 방 개수가 뜨게 만들기
-    4. 로비 및 게임은 인증한 유저만 들어갈 수 있도록 만들기
+    2  로비 api 만들기 ( 방 생성, 방 정보 가져오기 Ok( 내부적 변형만 하면 됨 ), 회원 칩 개수 Ok ) -- 일부 오케이
+
+    3. 방 생성을 어떻게 해야할까..
 
     5. API 라우팅 / 모듈화 분리 (크다 싶으면 언제든지 고고)
-
-    6. 비밀번호 해쉬화 ( 보안 문제 )
-    7. 로비 및 게임은 인증한 유저만 들어갈 수 있도록 만들기
     
     [ 게임 내 로직 구현하기 ] - 웹소켓 이용하기
 
