@@ -1,17 +1,21 @@
 use std::net::SocketAddr;
 
+use futures_channel::mpsc::UnboundedSender;
 use tokio::net::TcpStream;
 
 use hyper::{Request, body::Incoming};
+use tokio_tungstenite::tungstenite::Message;
 
+// Player는 room에 종속된 구조체 -> room 바깥에서 생성되거나 따로 관장될 수 없음.
 pub struct Player {
     pub name: String,
-    pub chips: u32,
-    pub stream: Option<TcpStream>,
-    pub addr: Option<SocketAddr>,
+    pub chips: usize,
     pub state: PlayerState,
     pub hands: Option<(String, String)>, // 있을 수도 있고 없을 수도 있으니까
-    pub player_pot: u32, // 변수 명 바꾸고 싶은데
+    pub player_pot: usize, // 변수 명 바꾸고 싶은데
+    // 웹소켓 소통용 (PeerMap 역할)
+    pub addr: SocketAddr,
+    pub tx: UnboundedSender<Message>, // 이 플레이어에게 보낼 res을 기다리는 쓰레드에게 전송하는 역할
 }
 
 #[derive(PartialEq, Debug)]
@@ -28,15 +32,15 @@ impl Player {
 }
 
 impl Player {
-    pub fn new(name: String, chips: u32) -> Player {
+    pub fn new(name: String, chips: usize, addr: SocketAddr, tx: UnboundedSender<Message>) -> Player {
         Player {
             name,
             chips,
-            stream: None, 
-            addr: None,
             state: PlayerState::Waiting,
             hands: None,
             player_pot: 0,
+            addr,
+            tx
         }
     }
 
@@ -75,7 +79,7 @@ impl Player {
         self.state = PlayerState::Check;
     }
 
-    pub fn call(&mut self, size: u32) {
+    pub fn call(&mut self, size: usize) {
         assert!(self.chips >= size);
         self.chips -= size;
         self.player_pot += size;
@@ -89,7 +93,7 @@ impl Player {
         self.state = PlayerState::AllIn; 
     }
 
-    pub fn raise(&mut self, size: u32) -> bool {
+    pub fn raise(&mut self, size: usize) -> bool {
 
         assert!(self.chips >= size);
 
@@ -105,7 +109,7 @@ impl Player {
         }
     }
 
-    pub fn blind_raise(&mut self, size: u32) {
+    pub fn blind_raise(&mut self, size: usize) {
 
         assert!(self.chips >= size);
 
@@ -121,7 +125,7 @@ impl Player {
         self.state = state;
     }
 
-    pub fn get_chips(&mut self, chips: u32) {
+    pub fn get_chips(&mut self, chips: usize) {
         self.chips += chips;
     }
 }

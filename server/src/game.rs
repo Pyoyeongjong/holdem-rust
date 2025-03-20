@@ -1,8 +1,12 @@
 use std::collections::VecDeque;
+use std::net::SocketAddr;
+use futures_channel::mpsc::UnboundedSender;
 use rand::seq::SliceRandom;
+use tokio_tungstenite::tungstenite::Message;
 use std::io;
 
 use crate::player::Player;
+use crate::room::PlayerInfo;
 use crate::player::PlayerState;
 
 mod actionflag;
@@ -14,11 +18,11 @@ use actionflag::ActionFlag;
 pub struct Game {
     players: Vec<Player>,   
     deck: VecDeque<String>, 
-    pot: u32,
+    pot: usize,
     board: Vec<String>,
     // Game Info 로 묶어서 관리할 수 있을 듯
     sb_idx: usize, // sb_idx로 변경해도 될 듯
-    blind: u32, // big_blind
+    blind: usize, // big_blind
     // 이 3개를 묶어서 game_player_state 정도로 관리할 수 있을 듯
     have_extra_chips: usize, // raise가 가능한 player 수
     alive: usize, // 살아있는 player 수
@@ -60,7 +64,7 @@ impl Game {
 }
 
 impl Game {
-    pub fn new(blind: u32) -> Game {
+    pub fn new(blind: usize) -> Game {
         Game {
             players: Vec::new(),
             deck: Game::init_deck(),
@@ -74,9 +78,13 @@ impl Game {
         }
     }
 
+    pub fn broadcast_game_state() {
+
+    }
+
     // 새로운 Player를 만들어서 Waiting Queue Push하기
-    pub fn insert_player(&mut self, name: String, chips: u32) {
-        let player = Player::new(name, chips);
+    pub fn insert_player(&mut self, info: PlayerInfo, tx:UnboundedSender<Message>) {
+        let player = Player::new(info.name, info.chips, info.addr, tx);
         self.players.push(player);
     }
 
@@ -200,7 +208,7 @@ impl Game {
 
         let sb_idx: usize = self.sb_idx;
         let mut cur_idx: usize;
-        let mut call_pot: u32; // 일인당 내야하는 총 chip의 개수
+        let mut call_pot: usize; // 일인당 내야하는 총 chip의 개수
 
         if is_free_flop {
 
@@ -278,7 +286,7 @@ impl Game {
                 }
                 3 => {
                     let mut raise_num_buf = String::new();
-                    let mut raise_num: u32;
+                    let mut raise_num: usize;
 
                     loop {
                         println!("[Game] Enter your raise size.");
@@ -376,7 +384,7 @@ impl Game {
         }
     }
 
-    fn player_raise(&mut self, idx: usize, size: u32) -> u32 {
+    fn player_raise(&mut self, idx: usize, size: usize) -> usize {
 
         let is_allin = self.players[idx].raise(size);
         self.pot += size;
@@ -384,7 +392,7 @@ impl Game {
         self.players[idx].player_pot
     }
 
-    fn player_allin(&mut self, idx: usize, call_pot: u32) -> u32 {
+    fn player_allin(&mut self, idx: usize, call_pot: usize) -> usize {
         
         self.pot += self.players[idx].chips;
         self.players[idx].allin();
@@ -397,13 +405,13 @@ impl Game {
         }
     }
 
-    fn player_blind_raise(&mut self, idx: usize, size: u32) -> u32 {
+    fn player_blind_raise(&mut self, idx: usize, size: usize) -> usize {
         self.pot += size;
         self.players[idx].blind_raise(size);
         self.players[idx].player_pot
     }
 
-    fn player_call(&mut self, idx: usize, size: u32) {
+    fn player_call(&mut self, idx: usize, size: usize) {
         self.pot += size;
         self.players[idx].call(size);
     }
@@ -418,7 +426,7 @@ impl Game {
         self.have_extra_chips -= 1;
     }
 
-    fn is_bet_finished(&mut self, idx: usize, call_pot: u32) -> bool {
+    fn is_bet_finished(&mut self, idx: usize, call_pot: usize) -> bool {
 
         let player = &self.players[idx];
 
@@ -490,8 +498,8 @@ impl Game {
     }
 
 
-    fn find_largest_player_pot(&self) -> u32 {
-        let mut result: u32 = 0;
+    fn find_largest_player_pot(&self) -> usize {
+        let mut result: usize = 0;
         for player in self.players.iter() {
             if player.is_alive() && player.player_pot > result {
                 result = player.player_pot;
@@ -500,8 +508,8 @@ impl Game {
         result
     }
 
-    fn find_smallest_player_pot(&self) -> u32 {
-        let mut result: u32 = 0xffffffff;
+    fn find_smallest_player_pot(&self) -> usize {
+        let mut result: usize = 0xffffffff;
         for player in self.players.iter() {
             if player.is_alive() && player.player_pot < result {
                 result = player.player_pot;
@@ -524,8 +532,8 @@ impl Game {
         
         for player in self.players.iter_mut() {
             if player.state == PlayerState::Winner {
-                player.chips +=  self.pot / self.winners as u32;
-                println!("Winner {} takes {} chips!", player.name, self.pot / self.winners as u32)
+                player.chips +=  self.pot / self.winners;
+                println!("Winner {} takes {} chips!", player.name, self.pot / self.winners)
             }
             player.player_pot = 0;
         }

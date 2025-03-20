@@ -9,6 +9,7 @@ use room::{Room, find_room};
 // use player::make_player_by_http;
 
 use rusqlite::fallible_iterator::Unwrap;
+use server::threadpool::RoomThreadPool;
 use tokio::net::{TcpStream, TcpListener};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -24,6 +25,7 @@ use hyper_util::rt::TokioIo;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, Empty};
 use bytes::Bytes;
 
+// TODO::해당 서버는 tokio를 사용하고 있기 때문에, tokio::mpsc를 사용하는 방안을 생각해봐야 할듯
 use futures_channel::mpsc::{unbounded, UnboundedSender};
 use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
@@ -33,8 +35,9 @@ use std::{
     convert::Infallible,
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock, Mutex},
     fs,
+    str::FromStr,
 };
 
 use serde::{Deserialize, Serialize};
@@ -79,12 +82,12 @@ fn serve_static_file(path: &str) -> Result<Response<BoxBody<Bytes, Infallible>>,
 
 // Infallable 은 절대 실패할 수 없다는 열거형 값이래요
 async fn handle_request(
-    peer_map: PeerMap,
-    mut req: Request<Incoming>,
+    req: Request<Incoming>,
     addr: SocketAddr,
-    rooms: Arc<Mutex<Vec<Room>>>,
+    rooms_thread_pool: Arc<RwLock<RoomThreadPool>>, // 근데 쓰레드 풀 자체가 RwLock일 필요가 있나? Room 별로 RwLock이어야 하지 않나?
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
 
+    println!("Request Occuread at address {addr}");
     println!("The request's path is: {}", req.uri().path());
 
     let upgrade = HeaderValue::from_static("Upgrade");
@@ -164,8 +167,32 @@ async fn handle_request(
         // Websocket 제외 일반 통신
         match (req.method(), req.uri().path()) {
 
-            (&Method::GET, "/api/lobby/get-player-chips") => {
+            // POST로는 방만 만들고
+            (&Method::POST, "/api/lobby/create-room") => {
 
+                let b = req.collect().await?.to_bytes();
+                let params: Value = match serde_json::from_slice(&b) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        return Ok(Response::builder()
+                        .status(400)
+                        .body(full(MISSING))
+                        .unwrap())
+                    }
+                };
+
+                let name = params["name"].as_str().unwrap().to_string();
+                let blind: usize = FromStr::from_str(params["blind"].as_str().unwrap()).unwrap();
+
+                let mut rooms_thread_pool = rooms_thread_pool.write().unwrap();
+                rooms_thread_pool.craete_new_room(name, blind);
+
+                println!("Create Room Completed!");
+
+                Ok(Response::new(full("/lobby/new-room")))
+            },
+
+            (&Method::GET, "/api/lobby/get-player-chips") => {
 
                 let header_map = req.headers();
                 // expect는 panic 발생용! 보통 unwrap_or을 많이씀
@@ -173,11 +200,7 @@ async fn handle_request(
                     .and_then(|v| v.to_str().ok())
                     .expect("Access Token is not here");
 
-                println!("{access_token}");
-
                 let id = verify_token(access_token, SERVER_SECRET).expect("id verify failed!");
-
-                println!("{id}");
 
                 let chips = get_player_chips(&id).expect("Failed to get chips");
                 println!("{chips}");
@@ -191,34 +214,21 @@ async fn handle_request(
 
             (&Method::GET, "/api/lobby/get-rooms-info") => {
 
-                println!("Hello get rooms info!");
-
                 let header_map = req.headers();
                 // expect는 panic 발생용! 보통 unwrap_or을 많이씀
                 let access_token = header_map.get("authorization")
                     .and_then(|v| v.to_str().ok())
                     .expect("Access Token is not here");
 
-                println!("{access_token}");
-
                 let id = verify_token(access_token, SERVER_SECRET).expect("id verify failed!");
 
-                println!("{id}");
+                let rooms_thread_pool = rooms_thread_pool.read().unwrap();
+                let rooms_info = rooms_thread_pool.get_rooms_info();
 
-                let res = json!({
-                    "rooms": [
-                        {"id": 1, "bb": 100, "participants": 1, "max_participants": 6},
-                        {"id": 2, "bb": 200, "participants": 3, "max_participants": 6},
-                        {"id": 3, "bb": 300, "participants": 5, "max_participants": 6},
-                    ]
-                });
-
+                let res = serde_json::to_string(&rooms_info).unwrap();
+                println!("{}",res);
                 Ok(Response::new(full(res.to_string())))
             },
-
-            (&Method::POST, "/api/lobby/create-rooms") => {
-                Ok(Response::new(empty()))
-            }
 
             (&Method::POST, "/api/register") => {
                 let b = req.collect().await?.to_bytes();
@@ -232,6 +242,7 @@ async fn handle_request(
                         .unwrap());
                     }
                 };
+                
                 // JSON을 그대로 to_string 하면 JSON 문자열이 쌍따옴표 붙은 상태로 그대로 string 됨
                 let new_user = User {
                     id: params["id"].as_str().unwrap().to_string(),
@@ -504,9 +515,7 @@ fn find_user_by_id(id: &String) -> Result<Option<User>, rusqlite::Error> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
-    let rooms: Arc<Mutex<Vec<Room>>> = Arc::new(Mutex::new(Vec::new()));
-    let state = PeerMap::new(Mutex::new(HashMap::new()));
-
+    let room_thread_pool = Arc::new(RwLock::new(RoomThreadPool::new(5)));
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     let listener = TcpListener::bind(addr).await?;
 
@@ -514,15 +523,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        let state = state.clone();
-        let rooms = rooms.clone();
+        let room_thread_pool = room_thread_pool.clone();
 
         // tokio::task::spawn은 tokio::spawn을 재포장한 것일 뿐이라 기능적으로 동일함
         tokio::spawn(async move {
             // hyper는 기본적으로 tokio::net::TcpStream을 바로 사용할 수 없어서
             // 호환성을 입히기 위해 TokioIo를 사용
             let io = TokioIo::new(stream);
-            let service = service_fn(move |req| handle_request(state.clone(), req, addr, rooms.clone()));
+            let service = service_fn(move |req| handle_request(req, addr, Arc::clone(&room_thread_pool)));
             // with_upgrades를 통해 기본 http 통신을 다른 프로토콜로 덮는다 생각하자
             let conn = http1::Builder::new()
                 .serve_connection(io, service)
@@ -556,6 +564,13 @@ fn verify_token(token: &str, server_key: &str) -> Option<String> {
     2  로비 api 만들기 ( 방 생성, 방 정보 가져오기 Ok( 내부적 변형만 하면 됨 ), 회원 칩 개수 Ok ) -- 일부 오케이
 
     3. 방 생성을 어떻게 해야할까..
+    쓰레드 풀을 통해서 room을 생성해야 할 것 같은데...?? (제한적인 room 생성을 위해)
+    그리고 A 쓰레드에서 룸을 돌리고,
+    B 쓰레드에서 웹소켓을 연결할 때, A쓰레드랑 파이프라인(mpsc)을 생성하고 연결해야할 듯
+    broadcast도 만들어야겠네..
+
+    
+
 
     5. API 라우팅 / 모듈화 분리 (크다 싶으면 언제든지 고고)
     
@@ -566,6 +581,8 @@ fn verify_token(token: &str, server_key: &str) -> Option<String> {
     2. 게임에 관전 waiting queue 구현 (최대 관전자 수 몰루)
     
     이러한 것들을 관할하는 Lobby 구현하기
+
+    디도스 공격을 방어하기 위해 최대 쓰레드 풀을 제한하기
 
 
 */ 
