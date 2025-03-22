@@ -1,8 +1,7 @@
 use std::collections::VecDeque;
-use std::net::SocketAddr;
 use futures_channel::mpsc::UnboundedSender;
 use rand::seq::SliceRandom;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use std::io;
 
 use crate::player::Player;
@@ -83,9 +82,11 @@ impl Game {
     }
 
     // 새로운 Player를 만들어서 Waiting Queue Push하기
-    pub fn insert_player(&mut self, info: PlayerInfo, tx:UnboundedSender<Message>) {
-        let player = Player::new(info.name, info.chips, info.addr, tx);
+    pub fn insert_player(&mut self, info: PlayerInfo, tx: UnboundedSender<Message>) {
+        let player = Player::new(info.name, info.chips, info.addr, tx.clone());
         self.players.push(player);
+        println!("Inserted Player! player_len: {}",self.players.len());
+        tx.unbounded_send(Message::Text(Utf8Bytes::from_static("Hello"))).unwrap();
     }
 
     fn reset_game_player_state(&mut self) {

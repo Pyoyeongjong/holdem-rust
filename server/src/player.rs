@@ -1,9 +1,7 @@
 use std::net::SocketAddr;
-
+use crate::db;
 use futures_channel::mpsc::UnboundedSender;
-use tokio::net::TcpStream;
 
-use hyper::{Request, body::Incoming};
 use tokio_tungstenite::tungstenite::Message;
 
 // Player는 room에 종속된 구조체 -> room 바깥에서 생성되거나 따로 관장될 수 없음.
@@ -128,4 +126,10 @@ impl Player {
     pub fn get_chips(&mut self, chips: usize) {
         self.chips += chips;
     }
+}
+
+pub fn get_player_chips(id: &String) -> Result<usize, rusqlite::Error> {
+    let user = db::find_user_by_id(id).expect("find_user_by_id: can't find player").expect("222");
+    let chips = user.chips as usize;
+    Ok(chips)
 }
