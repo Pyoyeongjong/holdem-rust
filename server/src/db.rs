@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use bcrypt::{verify, DEFAULT_COST, hash};
 
+use crate::player::Player;
+
 const PATH: &str = "./my_db.db3";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -127,4 +129,18 @@ pub fn is_user_exist(id: &String) -> Result<bool, rusqlite::Error> {
 
     let res = count.unwrap_or(0) > 0;
     Ok(res)
+}
+
+pub fn save_result_in_db(players: &Vec<Player>) -> Result<(), rusqlite::Error>{
+    let path = PATH;
+    let conn = Connection::open(path)?;
+
+    for player in players.iter() {
+        conn.execute(
+            "UPDATE user SET chips = ?1 WHERE id = ?2",
+            params![player.chips, player.id],
+        )?;
+    }
+
+    Ok(())
 }

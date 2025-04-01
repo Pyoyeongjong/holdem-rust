@@ -71,45 +71,140 @@
         }
     </style>
     <script>
-        function goToGame() {
-            window.location.href = "/game";
+        // DOMContentLoaded는 캐시에 따라 다시 안불릴 수도 있는데, pageshow는 무조건 불린다
+        document.addEventListener("DOMContentLoaded", async function () {
+            if (window.location.pathname === "/lobby") {
+                try {
+                    let chips = await getPlayerChips();
+                    updated_text = chips + " chips"
+                    document.getElementById("chips").textContent = updated_text;
+
+
+                    getRoomInfo();
+
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+        })
+
+        function goToGame(room_id) {
+            window.location.href = `/game?roomId=${room_id}`;
+        }
+
+        // 여러 번 요청을 해라!
+        async function createRoom() {
+
+            let access_token = localStorage.getItem("access_token");
+
+            try {
+                const response = await fetch("api/lobby/create-room", {
+                    method: "POST",
+                    headers: {
+                        "Authentication": `${access_token}`
+                    },
+                    body: JSON.stringify({
+                        "name": "Room 1",
+                        "blind": "100"
+                    })
+                })
+
+                getRoomInfo();
+
+            } catch (err) {
+                console.error(err);
+                return;
+            }
+
+
+        }
+
+        async function getPlayerChips() {
+            try {
+
+                let access_token = localStorage.getItem("access_token");
+                const response = await fetch("/api/lobby/get-player-chips", {
+                    method: "GET",
+                    // Bearer - OAuth 토큰 표현 방식이라는데.. 나만 쓸거니까 빼기
+                    headers: {
+                        "Authorization": `${access_token}`
+                    }
+                });
+
+                const result = await response.json();
+                console.log(result);
+                // json을 return 하면 [object Object]로 표시되더라..
+                return result.chips;
+
+            } catch ( error ) {
+                console.error(error);
+            }
+        }
+
+        async function getRoomInfo() {
+
+            let access_token = localStorage.getItem("access_token");
+            const response = await fetch("/api/lobby/get-rooms-info", {
+                method: "GET",
+                headers: {
+                    "Authorization": `${access_token}`
+                }
+            })
+
+            const result = await response.json();
+            console.log(result);
+            updateRoomList(result);
+        }
+
+        function updateRoomList(rooms) {
+            if (!Array.isArray(rooms)) return;
+            
+            let roomlist = document.querySelector(".room-list");
+            if(!roomlist) return;
+
+            roomlist.innerHTML = "";
+
+            rooms.forEach(room => {
+                let roomDiv = document.createElement("div");
+                roomDiv.classList.add("room");
+
+                roomDiv.innerHTML = `
+                    <span class="room-number">${room.id}</span>
+                    <div class="room-info">${room.name}</div>
+                    <span class="bb-size">BB: ${room.bb}</span>
+                    <span class="participants">${room.cur_player}/${room.max_player}</span>
+                `;
+
+                roomDiv.addEventListener("click", () => enterRoom(room));
+
+                roomlist.appendChild(roomDiv);
+            });
+
+            console.log(rooms);
+        }
+
+        async function enterRoom(room) {
+
+            console.log(`Room ${room.id} 입장!`);
+
+            goToGame(room.id);
+
+            // 서버는 ok, 방 정보 등을 알려줌
+
+            // 2. game.html로 이동시킴
+
+            // 3. game.html에서 자동 웹소켓 연결하겠지?
+
+            // 4. 연결된 웹소켓으로 방 입장 신청을 함
+            
         }
     </script>
 </head>
 <body>
     <h1>홀덤 게임 방 목록</h1>
-    <span class="user-info-inline">Player1: 5000 Chips</span>
-    <div class="room-list">
-        <div class="room">
-            <span class="room-number">1</span>
-            <div class="room-info">방 1</div>
-            <span class="bb-size">BB: 100</span>
-            <span class="participants">1/6</span>
-        </div>
-        <div class="room">
-            <span class="room-number">2</span>
-            <div class="room-info">방 2</div>
-            <span class="bb-size">BB: 200</span>
-            <span class="participants">2/6</span>
-        </div>
-        <div class="room">
-            <span class="room-number">3</span>
-            <div class="room-info">방 3</div>
-            <span class="bb-size">BB: 300</span>
-            <span class="participants">3/6</span>
-        </div>
-        <div class="room">
-            <span class="room-number">4</span>
-            <div class="room-info">방 4</div>
-            <span class="bb-size">BB: 400</span>
-            <span class="participants">4/6</span>
-        </div>
-        <div class="room">
-            <span class="room-number">5</span>
-            <div class="room-info">방 5</div>
-            <span class="bb-size">BB: 500</span>
-            <span class="participants">5/6</span>
-        </div>
-    </div>
+    <button onclick="getRoomInfo()">방 정보 얻기</button>
+    <button onclick="createRoom()">방 생성</button>
+    <span class="user-info-inline" id="chips"></span>
+    <div class="room-list"></div>
 </body>
 </html>

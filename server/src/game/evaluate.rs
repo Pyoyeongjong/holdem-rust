@@ -68,6 +68,10 @@ pub fn evaluate_hand(vec: &Vec<String>) -> HandRank {
     
     // 정렬 시작
     for card in cards {
+        if card.len() < 2 {
+            println!("Wrong Card!");
+        }
+
         let suit = card.chars().nth(0).unwrap();
         let num = card.chars().nth(1).unwrap();//.to_digit(10).unwrap() as u8;
 
@@ -108,36 +112,24 @@ pub fn evaluate_hand(vec: &Vec<String>) -> HandRank {
 
     card_orders.sort_by(|a, b| b.cmp(a));
 
-    // print_suits_rank_card_orders(&suits, &ranks, &card_orders);
-
     // 스티플
-    // println!("@@Stifle@@");
     for suit in suits.iter() {
-        let straight = evaluate_straight(&suit);
-        if straight.is_some() {
-            let straight = straight.unwrap();
+        if let Some(straight) = evaluate_straight(&suit) {
             return HandRank::StraigntFlush(straight[0], straight[1], straight[2], straight[3], straight[4]);
         }
     }
     
     // 포카드
-    // println!("FourCard");
-    let four_cards = evaluate_pairs_or_over(vec![4, 1], ranks.clone());
-    if four_cards.is_some() {
-        let four_cards = four_cards.unwrap();
+    if let Some(four_cards) = evaluate_pairs_or_over(vec![4, 1], ranks.clone()) {
         return HandRank::FourOfCards(four_cards[0], four_cards[1]);
     }
 
     // 풀하우스
-    // println!("FullHouse");
-    let full_house = evaluate_pairs_or_over(vec![3, 2], ranks.clone());
-    if full_house.is_some() {
-        let full_house = full_house.unwrap();
+    if let Some(full_house) = evaluate_pairs_or_over(vec![3, 2], ranks.clone()) {
         return HandRank::FullHouse(full_house[0], full_house[1]);
     }
     
     // 플러시
-    // println!("Flush");
     for suit in suits {
         if suit.len() >= 5 {
             return HandRank::Flush(suit[0], suit[1], suit[2], suit[3], suit[4]);
@@ -145,41 +137,27 @@ pub fn evaluate_hand(vec: &Vec<String>) -> HandRank {
     }
 
     // 스트레이트
-    // println!("Straight");
-    let straight = evaluate_straight(&card_orders);
-    if straight.is_some() {
-        return HandRank::Straight(straight.unwrap()[0]);
+    if let Some(straight) = evaluate_straight(&card_orders) {
+        return HandRank::Straight(straight[0]);
     }
 
     // 트리플
-    // println!("Triple");
-    let triple = evaluate_pairs_or_over(vec![3, 1, 1], ranks.clone());
-    if triple.is_some() {
-        let triple = triple.unwrap();
+    if let Some(triple) = evaluate_pairs_or_over(vec![3, 1, 1], ranks.clone()) {
         return HandRank::Triple(triple[0], triple[1], triple[2]);
     }
 
     // 투페어
-    // println!("Twopair");
-    let two_pairs = evaluate_pairs_or_over(vec![2, 2, 1], ranks.clone());
-    if two_pairs.is_some() {
-        let two_pairs = two_pairs.unwrap();
+    if let Some(two_pairs) = evaluate_pairs_or_over(vec![2, 2, 1], ranks.clone()) {
         return HandRank::TwoPairs(two_pairs[0], two_pairs[1], two_pairs[2]);
     }
 
     // 페어
-    // println!("Pair");
-    let pair = evaluate_pairs_or_over(vec![2, 1, 1, 1], ranks.clone());
-    if pair.is_some() {
-        let pair = pair.unwrap();
+    if let Some(pair) = evaluate_pairs_or_over(vec![2, 1, 1, 1], ranks.clone()) {
         return HandRank::Pair(pair[0], pair[1], pair[2], pair[3]);
     }
 
     // 탑
-    // println!("Top");
-    let top_card = evaluate_pairs_or_over(vec![1, 1, 1, 1, 1], ranks.clone());
-    if top_card.is_some() {
-        let top_card = top_card.unwrap();
+    if let Some(top_card) = evaluate_pairs_or_over(vec![1, 1, 1, 1, 1], ranks.clone()) {
         return HandRank::TopCard(top_card[0], top_card[1], top_card[2], top_card[3], top_card[4]);
     }
 

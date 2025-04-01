@@ -92,6 +92,7 @@
 
                 if (result.success == true) {
                     alert("로그인 ok!");
+                    localStorage.setItem("access_token", result.access_token);
                     goToLobby();
                 } else {
                     alert("로그인 실패!");

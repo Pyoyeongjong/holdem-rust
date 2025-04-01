@@ -1,17 +1,19 @@
 // main.rs 가 최상위 모듈이라 다른 rs를 확인 가능하지만, game.rs에서는 player.rs를 인식할 수 없음.
 // lib.rs로 묶어주거나, game 폴더 안에 player.rs를 구현하거나...
 // 프로젝트 내부 모듈
+
+// main에 명시해줘야 컴파일 모듈로써 기능을 한다.
 mod game;
 mod player;
 mod room;
 mod db;
 mod webcommu;
 mod authentication;
+mod params;
 
-use room::*;
+use room::{RoomThreadPool, handle_connection, PeerMap};
 use webcommu::*;
 use authentication::verify_token;
-// use player::make_player_by_http;
 
 use tokio::net::TcpListener;
 use hyper::server::conn::http1;
@@ -26,8 +28,6 @@ use hyper_util::rt::TokioIo;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use bytes::Bytes;
 
-// TODO::해당 서버는 tokio를 사용하고 있기 때문에, tokio::mpsc를 사용하는 방안을 생각해봐야 할듯
-use futures_channel::mpsc::UnboundedSender;
 use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
 
 use std::{
@@ -35,10 +35,9 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::Arc,
-    str::FromStr,
 };
 
-// async 환경에서의 Mutex, RwLock
+// tokio async 환경에서의 Mutex, RwLock
 use tokio::sync::{Mutex, RwLock};
 
 use jsonwebtoken::{encode, Header,  EncodingKey};
@@ -47,43 +46,37 @@ use chrono::{Duration, Utc};
 use serde_json::{json, Value};
 
 use tokio_tungstenite::{
-    tungstenite::protocol::{Message, Role},
+    tungstenite::protocol::Role,
     WebSocketStream,
 };
 
-type PeerMap = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
-type Tx = UnboundedSender<Message>;
-
-//static INDEX: &[u8] = b"<html><body><form action=\"post\" method=\"post\">Name: <input type=\"text\" name=\"name\"><br>Number: <input type=\"text\" name=\"number\"><br><input type=\"submit\"></body></html>";
 static MISSING: &[u8] = b"Missing field";
-//static NOTNUMERIC: &[u8] = b"Number field is not numeric";
 const SERVER_SECRET: &str = "734c61eebdb501f08ced87f8173ea616e12e9c57036764c71e14f4bc1caf1070";
 
+fn send_http_response_falied(code: u16, msg: String) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
+    let res = json!({
+        "success": false,
+        "msg": msg,
+    });
+    return Ok(Response::builder()
+        .status(code)
+        .body(full(res.to_string()))
+        .unwrap())
+}
 
-// Infallable 은 절대 실패할 수 없다는 열거형 값이래요
+// Infallable 은 절대 실패할 수 없다는 열거형 값
 async fn handle_request(
     mut req: Request<Incoming>,
     addr: SocketAddr,
-    rooms_thread_pool: Arc<RwLock<RoomThreadPool>>, // 근데 쓰레드 풀 자체가 RwLock일 필요가 있나? Room 별로 RwLock이어야 하지 않나?
+    rooms_thread_pool: Arc<RwLock<RoomThreadPool>>, // TODO: 근데 쓰레드 풀 자체가 RwLock일 필요가 있나? Room 별로 RwLock이어야 하지 않나? 생각해보기
     peer_map: PeerMap,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
 
-    println!("Request Occuread at address {addr}");
-    println!("The request's path is: {}", req.uri().path());
+    println!("Request Occuread at address {}. The request's path is: {}", addr, req.uri().path());
 
-    let upgrade = HeaderValue::from_static("Upgrade");
-    let websocket = HeaderValue::from_static("websocket");
-
-    // 웹소켓 보안 인증 절차
-    let headers = req.headers();
-    let key = headers.get(SEC_WEBSOCKET_KEY);
-    // 클라이언트가 보낸 키를 통해 accept_key를 생성
-    let derived = 
-        key.map(|k| derive_accept_key(k.as_bytes()));
-
-    // 웹소켓 연결인가 검증하는 과정
-    // http 호환성을 위해 하나를 선택해야 되는데, 연결 자체는 변경을 유발하지 않으므로 GET
+    // 웹소켓 연결이 GET을 사용하는 이유: http 호환성을 위해 하나를 선택해야 되는데, 연결 자체는 변경을 유발하지 않으므로 GET
     if req.method() == Method::GET
+        // TODO: 웹소켓 연결인가 검증하는 과정인데, 일단 왜 해야하는지부터 알아야 할 듯
         // && req.version() < Version::HTTP_11
         // && headers
         //     .get(CONNECTION)
@@ -106,8 +99,21 @@ async fn handle_request(
         // && !key.is_none()
         && req.uri().path() == "/socket"
     {
-        // 아니다 일단 웹소켓은 무조건 연결해주는게 맞음
-        // 바깥에서 handle_conection을 통해서 웹소켓을 연결함!
+        // handle_conection을 통해서 웹소켓을 연결함!
+
+        let upgrade = HeaderValue::from_static("Upgrade");
+        let websocket = HeaderValue::from_static("websocket");
+    
+        // 웹소켓 보안 인증 절차
+        let headers = req.headers();
+        // Option으로 놔두는건 안좋은듯? 바로바로 처리하기
+        let key = match headers.get(SEC_WEBSOCKET_KEY) {
+            Some(k) => k,
+            None => return send_http_response_falied(400, "Missing SEC_WEBSOCKET_KEY".to_string()),
+        };
+        
+        // 클라이언트가 보낸 키를 통해 accept_key를 생성
+        let derived = derive_accept_key(key.as_bytes());
         let ver = req.version();
         tokio::spawn(async move {
             match hyper::upgrade::on(&mut req).await {
@@ -123,14 +129,16 @@ async fn handle_request(
                 Err(e) => println!("upgrade error: {}", e),
             }
         });
+
         // handshake OK sign을 보내야함
         let mut res = Response::new(empty());
-
         *res.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
         *res.version_mut() = ver;
         res.headers_mut().append(CONNECTION, upgrade);
         res.headers_mut().append(UPGRADE, websocket);
-        res.headers_mut().append(SEC_WEBSOCKET_ACCEPT, derived.unwrap().parse().unwrap());
+        if let Ok(val) = derived.parse() {
+            res.headers_mut().append(SEC_WEBSOCKET_ACCEPT, val);
+        }
         // Let's add an additional header to our response to the client.
         res.headers_mut().append("MyCustomHeader", ":)".parse().unwrap());
         res.headers_mut().append("SOME_TUNGSTENITE_HEADER", "header_value".parse().unwrap());
@@ -141,30 +149,28 @@ async fn handle_request(
         // GET / POST 차이 == 캐싱 여부 & 보안
         // Websocket 제외 일반 통신
         match (req.method(), req.uri().path()) {
-
-            // POST로는 방만 만들고
+            // POST로는 방만 만들고 입장은 따로 하거나 연계적으로 실시
             (&Method::POST, "/api/lobby/create-room") => {
 
                 let b = req.collect().await?.to_bytes();
                 let params: Value = match serde_json::from_slice(&b) {
                     Ok(val) => val,
-                    Err(_) => {
-                        return Ok(Response::builder()
-                        .status(400)
-                        .body(full(MISSING))
-                        .unwrap())
-                    }
+                    Err(_) => { json!({}) }
                 };
 
-                let name = params["name"].as_str().unwrap().to_string();
-                let blind: usize = FromStr::from_str(params["blind"].as_str().unwrap()).unwrap();
+                let name = params["name"].as_str().unwrap_or("");
+                let blind: usize = params["blind"].as_str().and_then(|b| b.parse::<usize>().ok()).unwrap_or(0);
 
+                let rooms_thread_pool_cloned = rooms_thread_pool.clone();
                 let mut rooms_thread_pool = rooms_thread_pool.write().await;
-                rooms_thread_pool.craete_new_room(name, blind);
 
-                println!("Create Room Completed!");
+                let success =  rooms_thread_pool.craete_new_room(name, blind, rooms_thread_pool_cloned);
 
-                Ok(Response::new(full("/lobby/new-room")))
+                let res = json!({
+                    "success": success,
+                });
+
+                Ok(Response::new(full(res.to_string())))
             },
 
             (&Method::GET, "/api/lobby/get-player-chips") => {
@@ -173,14 +179,19 @@ async fn handle_request(
                 // expect는 panic 발생용! 보통 unwrap_or을 많이씀
                 let access_token = header_map.get("authorization")
                     .and_then(|v| v.to_str().ok())
-                    .expect("Access Token is not here");
+                    .unwrap_or("");
 
-                let id = verify_token(access_token, SERVER_SECRET).expect("id verify failed!");
+                let id = verify_token(access_token, SERVER_SECRET)
+                    .unwrap_or("".to_string());
 
-                let chips = player::get_player_chips(&id).expect("Failed to get chips");
-                println!("{chips}");
+                // 이거 상당히 좋은 방법인듯?
+                let (success, chips) = match player::get_player_chips(&id) {
+                    Ok(chips) => (true, chips),
+                    Err(_) => (false, 0),
+                };
 
                 let res = json!({
+                    "success": success,
                     "chips": chips
                 });
     
@@ -190,22 +201,25 @@ async fn handle_request(
             (&Method::GET, "/api/lobby/get-rooms-info") => {
 
                 let header_map = req.headers();
-                // expect는 panic 발생용! 보통 unwrap_or을 많이씀
                 let access_token = header_map.get("authorization")
                     .and_then(|v| v.to_str().ok())
-                    .expect("Access Token is not here");
+                    .unwrap_or("");
 
-                let id = verify_token(access_token, SERVER_SECRET).expect("id verify failed!");
+                let id = verify_token(access_token, SERVER_SECRET).unwrap_or("".to_string());
 
                 if db::find_user_by_id(&id).is_err() {
-                    panic!("Should have correct id!");
+                    return send_http_response_falied(400, "Id verify Falied".to_string());
                 }
 
                 let rooms_thread_pool = rooms_thread_pool.read().await;
                 let rooms_info = rooms_thread_pool.get_rooms_info();
 
-                let res = serde_json::to_string(&rooms_info).unwrap();
-                println!("{}",res);
+                let res = match serde_json::to_string(&rooms_info) {
+                    Ok(res) => res,
+                    Err(_) => {
+                        return send_http_response_falied(400, "Can't get rooms info!".to_string())
+                    }
+                };
                 Ok(Response::new(full(res.to_string())))
             },
 
@@ -215,17 +229,14 @@ async fn handle_request(
                 let params: Value = match serde_json::from_slice(&b) {
                     Ok(val) => val,
                     Err(_) => {
-                        return Ok(Response::builder()
-                        .status(400)
-                        .body(full(MISSING))
-                        .unwrap());
+                        return send_http_response_falied(400, "Get Wrong Params!".to_string());
                     }
                 };
                 
                 // JSON을 그대로 to_string 하면 JSON 문자열이 쌍따옴표 붙은 상태로 그대로 string 됨
                 let new_user = db::User {
-                    id: params["id"].as_str().unwrap().to_string(),
-                    pw: params["pw"].as_str().unwrap().to_string(),
+                    id: params["id"].as_str().unwrap_or("").to_string(),
+                    pw: params["pw"].as_str().unwrap_or("").to_string(),
                     email: params["email"].as_str().unwrap_or("").to_string(),
                     chips: 1000,
                     refresh_token: None,
@@ -292,8 +303,8 @@ async fn handle_request(
                     }
                 };
                 
-                let id = params["id"].as_str().unwrap_or_default().to_string();
-                let pw = params["pw"].as_str().unwrap_or_default().to_string();
+                let id = params["id"].as_str().unwrap_or("").to_string();
+                let pw = params["pw"].as_str().unwrap_or("").to_string();
 
                 let mut res: Value = json!({
                     "success": false,
@@ -304,8 +315,8 @@ async fn handle_request(
                     Ok(Some(_)) => {
                         let expiration = Utc::now()
                             .checked_add_signed(Duration::seconds(3600))
-                            .expect("valid timestamp")
-                            .timestamp() as usize;
+                            .map(|t| {t.timestamp() as usize})
+                            .unwrap();
 
                         // token 만들기
                         let claim: Claims = Claims {
@@ -390,19 +401,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /* 다음 해야할 것들
 
-    1. 로비 및 게임은 인증한 유저만 들어갈 수 있도록 만들기 (생성한 토큰을 페이지 들어갈 때마다 인증을 해야하는지가 의문이다.. 일단 패스)
-        그리고 snowmen_fight에서는 라우팅으로 화면 전환하지 않고 게임씬으로 전환하는데.. 나도 url을 통한 의도적인 화면 전환을 막아야하나 싶음 - 보류
+    [일단 보류]
+    url을 통한 의도적인 화면 전환을 막아야할 듯
+    뒤로가기를 통해 game화면으로 접근하는 거 막아야할 듯 
 
-    2. Broadcast 구현 - 진행 ㄱㄱ!!
+    예외처리 싹~ 해주기
 
-    B 쓰레드에서 웹소켓을 연결할 때, A쓰레드랑 파이프라인(mpsc)을 생성하고 연결해야할 듯
-    game_thread가 행동을 할 때마다, 게임 정보를 모든 플레이어에게 boradcast 해줘야한다!
 
-    [ 게임 내 로직 구현하기 ] - 웹소켓 이용하기
+    [ 게임 내 추가 로직 구현하기 (생각나는 대로)]
     1. 랜덤 입장 기능 구현 
     2. 조건에 맞는 방 찾기(BB 제한, 현재 인원 수, 게임 번호 등)
     2. 게임에 관전 waiting queue 구현 (최대 관전자 수 몰루)
-    이러한 것들을 관할하는 Lobby 구현하기
+
+
     디도스 공격을 방어하기 위해 최대 쓰레드 풀을 제한하기
 
 */ 

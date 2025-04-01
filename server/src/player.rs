@@ -2,11 +2,13 @@ use std::net::SocketAddr;
 use crate::db;
 use futures_channel::mpsc::UnboundedSender;
 
+// 
+
 use tokio_tungstenite::tungstenite::Message;
 
 // Player는 room에 종속된 구조체 -> room 바깥에서 생성되거나 따로 관장될 수 없음.
 pub struct Player {
-    pub name: String,
+    pub id: String,
     pub chips: usize,
     pub state: PlayerState,
     pub hands: Option<(String, String)>, // 있을 수도 있고 없을 수도 있으니까
@@ -32,7 +34,7 @@ impl Player {
 impl Player {
     pub fn new(name: String, chips: usize, addr: SocketAddr, tx: UnboundedSender<Message>) -> Player {
         Player {
-            name,
+            id: name,
             chips,
             state: PlayerState::Waiting,
             hands: None,
@@ -129,7 +131,10 @@ impl Player {
 }
 
 pub fn get_player_chips(id: &String) -> Result<usize, rusqlite::Error> {
-    let user = db::find_user_by_id(id).expect("find_user_by_id: can't find player").expect("222");
-    let chips = user.chips as usize;
-    Ok(chips)
+    if let Some(user) = db::find_user_by_id(id)? {
+        let chips = user.chips as usize;
+        Ok(chips)
+    } else {
+        Err(rusqlite::Error::QueryReturnedNoRows)
+    }
 }

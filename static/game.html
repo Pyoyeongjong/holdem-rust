@@ -52,9 +52,15 @@
         }
         .bb-text {
             position: absolute;
-            top: 10px;
+            top: 20px;
             font-size: 0.8rem;
             color: white;
+        }
+        .state-text {
+            position: absolute;
+            top: 40px;
+            font-size: 1rem;
+            color: rgb(180, 199, 75);
         }
         .pot-size {
             font-size: 1.5rem;
@@ -84,28 +90,64 @@
             margin-top: 10px;
             gap: 5px;
         }
+        .button-group button {
+            padding: 12px 20px;
+            font-size: 1.1rem;
+            min-width: 80px;
+            border: none;
+            border-radius: 6px;
+            background-color: #f0f0f0;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .button-group button:hover {
+            background-color: #e0e0e0;
+        }
+        .extra-controls {
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            right: 10px;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 10px;
+            padding: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            z-index: 1000;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
         .button-group {
             display: flex;
             gap: 10px;
+            flex-wrap: wrap;
         }
-        .extra-controls {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin-top: 5px;
-        }
-        .controls button, .controls input {
-            padding: 8px;
-            font-size: 1rem;
-            cursor: pointer;
-        }
-        .controls input[type="range"] {
-            width: 150px;
-        }
+
         .raise-container {
             display: flex;
+            flex-direction: column;
+            gap: 6px;
+            align-items: flex-start;
+        }
+
+        .slider-controls {
+            display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 6px;
+        }
+
+        #raise-slider {
+            width: 150px;
+        }
+
+        .extra-controls p {
+            margin: 0;
+            font-size: 0.9rem;
         }
         .player {
             position: absolute;
@@ -148,48 +190,331 @@
             font-size: 0.8rem;
             color: gray;
         }
+        .player-pot {
+            position: relative;
+            top: 15px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            color: rgb(51, 211, 118);
+            margin-bottom: 15px;
+        }
         /* 플레이어 위치 조정 */
-        .player1 { top: -100px; left: 50%; transform: translateX(-50%); }
-        .player2 { top: 0px; left: -140px; }
-        .player3 { top: 170px; left: -140px; }
-        .player4 { bottom: -100px; left: 50%; transform: translateX(-50%); }
-        .player5 { top: 170px; right: -140px; }
-        .player6 { top: 0px; right: -140px; }
+        .player4 { top: -120px; left: 50%; transform: translateX(-50%); }
+        .player3 { top: 0px; left: -140px; }
+        .player2 { top: 170px; left: -140px; }
+        .player1 { bottom: -120px; left: 50%; transform: translateX(-50%); }
+        .player6 { top: 170px; right: -140px; }
+        .player5 { top: 0px; right: -140px; }
+        .player.current-turn {
+            border: 2px solid gold;
+            box-shadow: 0 0 10px gold;
+        }
+        .player.folded {
+            opacity: 0.5;
+        }
+        .player.empty {
+            opacity: 0;
+        }
+        
     </style>
     <script>
+
         document.addEventListener("DOMContentLoaded", function () {
+            const slider = document.getElementById("raise-slider");
+            const output = document.getElementById("raise-value");
+
+            // 초기값 세팅
+            output.textContent = slider.value;
+
+            // 슬라이더 값이 변할 때마다 업데이트
+            slider.addEventListener("input", () => {
+                output.textContent = slider.value;
+            });
             if (window.location.pathname === "/game") {
-                console.log("Lets go");
                 connectWebSocket();
             }
         })
 
         let socket;
+        let access_token = localStorage.getItem("access_token");
 
         function connectWebSocket() {
             socket = new WebSocket("ws://127.0.0.1:8080/socket");
 
             socket.onopen = () => {
                 console.log("웹소켓 연결됨!");
-                document.getElementById("status").innerText = "연결 종료";
+                document.getElementById("status").innerText = "연결 완료";
+                
+                const params = new URLSearchParams(window.location.search);
+                const roomId = parseInt(params.get("roomId"));
+
+                console.log("Lets go to connect room", roomId);
+                access_token = localStorage.getItem("access_token");
+
+                const Message = {
+                    type: "join-game",
+                    access_token: `${access_token}`,
+                    roomId: roomId
+                }
+
+                socket.send(JSON.stringify(Message));
             }
 
             socket.onerror = (error) => {
                 console.error("WebSocket 오류:", error);
+                document.getElementById("status").innerText = "연결 에러";
             };
+
+            socket.onmessage = (msg) => {
+                // 이렇게 그냥 넘겨도 tmp_game_data.players 이렇게 접근이 가능하대요
+                const data = JSON.parse(msg.data);
+                console.log(data);
+                if (data.type === "kick") {
+                    socket.close();
+                }
+                rendering(data);
+            };
+
+            socket.onclose = () => {
+
+                // const params = new URLSearchParams(window.location.search);
+                // const roomId = parseInt(params.get("roomId"));
+
+                document.getElementById("status").innerText = "연결 종료";
+                // const Message = {
+                //     type: "disconnect",
+                //     access_token: `${access_token}`,
+                //     roomId: roomId
+                // }
+                // socket.send(JSON.stringify(Message));
+                goToLobby();
+            }
         }
 
         function sendMessage() {
+            const params = new URLSearchParams(window.location.search);
+            const roomId = parseInt(params.get("roomId"));
+            //const access_token = localStorage.getItem("access_token");
+
             const input = document.getElementById("messageInput");
             const message = input.value.trim();
             if (message) {
-                socket.send(JSON.stringify({"type": message}));
+                socket.send(JSON.stringify({
+                    type: "action",
+                    player_action: "game_start",
+                    access_token: `${access_token}`,
+                    roomId: roomId
+                }));
                 input.value = "";
             }
         }
 
+        function check() {
+            const params = new URLSearchParams(window.location.search);
+            const roomId = parseInt(params.get("roomId"));
+            //const access_token = localStorage.getItem("access_token");
+
+            socket.send(JSON.stringify({
+                type: "action",
+                player_action: "check",
+                access_token: `${access_token}`,
+                roomId: roomId
+            }));
+        }
+
+        function call() {
+            const params = new URLSearchParams(window.location.search);
+            const roomId = parseInt(params.get("roomId"));
+            //const access_token = localStorage.getItem("access_token");
+
+            socket.send(JSON.stringify({
+                type: "action",
+                player_action: "call",
+                access_token: `${access_token}`,
+                roomId: roomId
+            }));
+        }
+
+        function raise() {
+            const slider = document.getElementById("raise-slider");
+            const size = parseInt(slider.value);
+
+            const params = new URLSearchParams(window.location.search);
+            console.log(window.location.search);
+            const roomId = parseInt(params.get("roomId"));
+
+            console.log(roomId);
+
+            socket.send(JSON.stringify({
+                type: "action",
+                player_action: "raise",
+                size: size,
+                access_token: `${access_token}`,
+                roomId: roomId
+            }));
+        }
+
+        function allin() {
+            const params = new URLSearchParams(window.location.search);
+            const roomId = parseInt(params.get("roomId"));
+            //const access_token = localStorage.getItem("access_token");
+
+            socket.send(JSON.stringify({
+                type: "action",
+                player_action: "allin",
+                access_token: `${access_token}`,
+                roomId: roomId
+            }));
+        }
+
+        function fold() {
+            const params = new URLSearchParams(window.location.search);
+            const roomId = parseInt(params.get("roomId"));
+            //const access_token = localStorage.getItem("access_token");
+
+            socket.send(JSON.stringify({
+                type: "action",
+                player_action: "fold",
+                access_token: `${access_token}`,
+                roomId: roomId
+            }));
+        }
+
         function goToLobby() {
             window.location.href = "/lobby";
+        }
+
+        function rendering(data) {
+            if (data.type == "action") {
+                if (data.action.check){
+                    document.getElementById("check_button").disabled = false;
+                    document.getElementById("check_button").style.opacity = "1.0";
+                } else {
+                    document.getElementById("check_button").disabled = true;
+                    document.getElementById("check_button").style.opacity = "0.5";
+                }
+                if (data.action.call){
+                    document.getElementById("call_button").disabled = false;
+                    document.getElementById("call_button").style.opacity = "1.0";
+                } else {
+                    document.getElementById("call_button").disabled = true;
+                    document.getElementById("call_button").style.opacity = "0.5";
+                }
+                if (data.action.raise){
+                    document.getElementById("raise_button").disabled = false;
+                    document.getElementById("raise_button").style.opacity = "1.0";
+                } else {
+                    document.getElementById("raise_button").disabled = true;
+                    document.getElementById("raise_button").style.opacity = "0.5";
+                }
+                if (data.action.allin){
+                    document.getElementById("allin_button").disabled = false;
+                    document.getElementById("allin_button").style.opacity = "1.0";
+                } else {
+                    document.getElementById("allin_button").disabled = true;
+                    document.getElementById("allin_button").style.opacity = "0.5";
+                }
+                if (data.action.fold){
+                    document.getElementById("fold_button").disabled = false;
+                    document.getElementById("fold_button").style.opacity = "1.0";
+                } else {
+                    document.getElementById("fold_button").disabled = true;
+                    document.getElementById("fold_button").style.opacity = "0.5";
+                }
+            } else if (data.type == "game_state") {
+
+                document.getElementById("check_button").disabled = true;
+                document.getElementById("check_button").style.opacity = "0.5";
+                document.getElementById("call_button").disabled = true;
+                document.getElementById("call_button").style.opacity = "0.5";
+                document.getElementById("raise_button").disabled = true;
+                document.getElementById("raise_button").style.opacity = "0.5";
+                document.getElementById("allin_button").disabled = true;
+                document.getElementById("allin_button").style.opacity = "0.5";
+                document.getElementById("fold_button").disabled = true;
+                document.getElementById("fold_button").style.opacity = "0.5";
+
+                document.querySelector(".pot-size").innerText = `Pot: ${data.board.pot}`;
+                document.querySelector(".bb-text").innerText = `BB: ${data.board.bb}`;
+
+                let state_text;
+                switch (data.board.state) {
+                    default: 
+                        state_text = `${data.board.state}`;
+                }
+
+                document.querySelector(".state-text").innerText = `현재: ${state_text}`;
+
+                const boardCardElems = document.querySelectorAll(".board-cards .card");
+                const boardCards = data.board.cards;
+                boardCardElems.forEach((cardElem, index) => {
+                    cardElem.innerText = boardCards[index] ?? "?";
+                });
+
+                const name = data.id;
+                let k = 0;
+                for (let player of data.players) {
+                    if (player.name == null) {
+                        console.error("I can't find this player!");
+                    }
+                    if (player.name == name) {
+                        break;
+                    }
+                    k += 1;
+                }
+                
+                data.players.forEach((player, i) => {
+                    let a = i - k;
+                    let idx = ((a % 6) + 6) % 6 + 1;
+
+                    if (idx == 1) {
+                        const slider = document.getElementById("raise-slider");
+                        document.querySelector(".max").innerText = player.chips;
+                        slider.max = player.chips;
+                        document.querySelector(".min").innerText = data.board.call_pot - player.player_pot + 10;
+                        slider.min = data.board.call_pot - player.player_pot + 10;
+                    }
+
+                    const playerElem = document.querySelector(`.player.player${idx}`);
+                    if (!playerElem) {
+                        return;
+                    }
+                    if(player == null) {
+                        playerElem.classList.add("empty");
+                        return;
+                    }
+
+                    playerElem.classList.remove("current-turn", "folded", "empty");
+
+                    // 현재 턴이면 강조하기
+                    if (player.state === "Turn") {
+                        playerElem.classList.add("current-turn");
+                    }
+
+                    // 죽었으면 흐리게 하기
+                    if (player.state === "Folded") {
+                        playerElem.classList.add("folded");
+                    }
+
+                    const actionElem = playerElem.querySelector(".player-action");
+                    actionElem.innerText = player.state || "Waiting";
+
+                    const nameElem = playerElem.querySelector(".player-name");
+                    nameElem.innerText = player.name;
+
+                    const cardElems = playerElem.querySelectorAll(".player-card");
+                    const cards = [player.card1 ?? "?", player.card2 ?? "?"];
+                    cardElems.forEach((cardElem, idx) => {
+                        cardElem.innerText = cards[idx];
+                    });
+
+                    const chipElem = playerElem.querySelector(".player-chips");
+                    chipElem.innerText = `Chips: ${player.chips}`;
+
+                    const potElem = playerElem.querySelector(".player-pot");
+                    potElem.innerText = player.player_pot;
+                });
+            }
         }
     </script>
 </head>
@@ -204,8 +529,9 @@
     <div class="game-title">홀덤 게임 방</div>
     <div class="game-container">
         <div class="table">
-            <div class="bb-text">BB: 100</div>
-            <div class="pot-size">Pot: 500</div>
+            <div class="bb-text"></div>
+            <div class="state-text"></div>
+            <div class="pot-size"></div>
             <div class="board-cards">
                 <div class="card">?</div>
                 <div class="card">?</div>
@@ -216,73 +542,83 @@
         </div>
         <div class="player player1">
             <div class="player-action">Check</div>
-            Player 1
+            <div class="player-name">Player 1</div>
             <div class="player-cards">
                 <div class="player-card">?</div>
                 <div class="player-card">?</div>
             </div>
             <div class="player-chips">Chips: 1000</div>
+            <div class="player-pot">1000</div>
         </div>
         <div class="player player2">
             <div class="player-action">Check</div>
-            Player 2
+            <div class="player-name">Player 1</div>
             <div class="player-cards">
                 <div class="player-card">?</div>
                 <div class="player-card">?</div>
             </div>
             <div class="player-chips">Chips: 1200</div>
+            <div class="player-pot">1000</div>
         </div>
         <div class="player player3">
             <div class="player-action">Check</div>
-            Player 3
+            <div class="player-name">Player 1</div>
             <div class="player-cards">
                 <div class="player-card">?</div>
                 <div class="player-card">?</div>
             </div>
             <div class="player-chips">Chips: 900</div>
+            <div class="player-pot">1000</div>
         </div>
         <div class="player player4">
             <div class="player-action">Check</div>
-            Player 4
+            <div class="player-name">Player 1</div>
             <div class="player-cards">
                 <div class="player-card">?</div>
                 <div class="player-card">?</div>
             </div>
             <div class="player-chips">Chips: 1500</div>
+            <div class="player-pot">1000</div>
         </div>
         <div class="player player5">
             <div class="player-action">Check</div>
-            Player 5
+            <div class="player-name">Player 1</div>
             <div class="player-cards">
                 <div class="player-card">?</div>
                 <div class="player-card">?</div>
             </div>
             <div class="player-chips">Chips: 800</div>
+            <div class="player-pot">1000</div>
         </div>
         <div class="player player6">
             <div class="player-action">Check</div>
-            Player 6
+            <div class="player-name">Player 1</div>
             <div class="player-cards">
                 <div class="player-card">?</div>
                 <div class="player-card">?</div>
             </div>
             <div class="player-chips">Chips: 1100</div>
+            <div class="player-pot">1000</div>
         </div>
-        <div class="controls">
+        <div class="extra-controls">
             <div class="button-group">
-                <button id="check">Check</button>
-                <button id="call">Call</button>
-                <button id="raise">Raise</button>
-                <button id="allin">All-in</button>
-                <button id="fold">Fold</button>
+                <button id="check_button" onclick="check()">Check</button>
+                <button id="call_button" onclick="call()">Call</button>
+                <button id="raise_button" onclick="raise()">Raise</button>
+                <button id="allin_button" onclick="allin()">All-in</button>
+                <button id="fold_button" onclick="fold()">Fold</button>
             </div>
-            <div class="extra-controls">
+        
+            <div class="raise-container">
                 <label><input type="checkbox"> 나가기 예약</label>
-                <div class="raise-container">
-                    <span>0</span>
-                    <input type="range" min="0" max="1000" step="10">
-                    <span>1000</span>
+        
+                <div class="slider-controls">
+                    <span class="min">0</span>
+                    <input type="range" id="raise-slider" min="0" max="1000" step="10">
+                    <span class="max">1000</span>
                 </div>
+        
+                <p>현재 베팅: <span id="raise-value">0</span></p>
             </div>
         </div>
     </div>
