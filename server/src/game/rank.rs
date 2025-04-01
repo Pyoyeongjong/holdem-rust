@@ -14,7 +14,7 @@ pub enum HandRank {
     StraigntFlush(u8, u8, u8, u8, u8),
 }
 
-fn evaluate_straight(cards: &Vec<u8>) -> Option<[u8; 5]> {
+fn check_straight(cards: &Vec<u8>) -> Option<[u8; 5]> {
 
     if cards.len() < 5 {
         return None
@@ -42,7 +42,7 @@ fn evaluate_straight(cards: &Vec<u8>) -> Option<[u8; 5]> {
     }
 }
 
-fn evaluate_most(cards: &mut [u8; 15], cond: u8) -> Option<u8> {
+fn find_max_count(cards: &mut [u8; 15], cond: u8) -> Option<u8> {
 
     let mut max: u8 = 0;
 
@@ -58,7 +58,7 @@ fn evaluate_most(cards: &mut [u8; 15], cond: u8) -> Option<u8> {
     }  
 }
 
-pub fn evaluate_hand(vec: &Vec<String>) -> HandRank {
+pub fn rank_hand(vec: &Vec<String>) -> HandRank {
 
     let cards = vec;
 
@@ -114,18 +114,18 @@ pub fn evaluate_hand(vec: &Vec<String>) -> HandRank {
 
     // 스티플
     for suit in suits.iter() {
-        if let Some(straight) = evaluate_straight(&suit) {
+        if let Some(straight) = check_straight(&suit) {
             return HandRank::StraigntFlush(straight[0], straight[1], straight[2], straight[3], straight[4]);
         }
     }
     
     // 포카드
-    if let Some(four_cards) = evaluate_pairs_or_over(vec![4, 1], ranks.clone()) {
+    if let Some(four_cards) = check_pairs_or_over(vec![4, 1], ranks.clone()) {
         return HandRank::FourOfCards(four_cards[0], four_cards[1]);
     }
 
     // 풀하우스
-    if let Some(full_house) = evaluate_pairs_or_over(vec![3, 2], ranks.clone()) {
+    if let Some(full_house) = check_pairs_or_over(vec![3, 2], ranks.clone()) {
         return HandRank::FullHouse(full_house[0], full_house[1]);
     }
     
@@ -137,38 +137,38 @@ pub fn evaluate_hand(vec: &Vec<String>) -> HandRank {
     }
 
     // 스트레이트
-    if let Some(straight) = evaluate_straight(&card_orders) {
+    if let Some(straight) = check_straight(&card_orders) {
         return HandRank::Straight(straight[0]);
     }
 
     // 트리플
-    if let Some(triple) = evaluate_pairs_or_over(vec![3, 1, 1], ranks.clone()) {
+    if let Some(triple) = check_pairs_or_over(vec![3, 1, 1], ranks.clone()) {
         return HandRank::Triple(triple[0], triple[1], triple[2]);
     }
 
     // 투페어
-    if let Some(two_pairs) = evaluate_pairs_or_over(vec![2, 2, 1], ranks.clone()) {
+    if let Some(two_pairs) = check_pairs_or_over(vec![2, 2, 1], ranks.clone()) {
         return HandRank::TwoPairs(two_pairs[0], two_pairs[1], two_pairs[2]);
     }
 
     // 페어
-    if let Some(pair) = evaluate_pairs_or_over(vec![2, 1, 1, 1], ranks.clone()) {
+    if let Some(pair) = check_pairs_or_over(vec![2, 1, 1, 1], ranks.clone()) {
         return HandRank::Pair(pair[0], pair[1], pair[2], pair[3]);
     }
 
     // 탑
-    if let Some(top_card) = evaluate_pairs_or_over(vec![1, 1, 1, 1, 1], ranks.clone()) {
+    if let Some(top_card) = check_pairs_or_over(vec![1, 1, 1, 1, 1], ranks.clone()) {
         return HandRank::TopCard(top_card[0], top_card[1], top_card[2], top_card[3], top_card[4]);
     }
 
     panic!("Cant reach Here!");
 }
 
-fn evaluate_pairs_or_over(cond: Vec<u8>, mut ranks: [u8; 15]) -> Option<Vec<u8>> {
+fn check_pairs_or_over(cond: Vec<u8>, mut ranks: [u8; 15]) -> Option<Vec<u8>> {
     let mut result: Vec<u8> = Vec::with_capacity(cond.len()); // with_capacity를 해도 인덱스 접근 불가능함!!
 
     for idx in 0..cond.len() {
-        let num = evaluate_most(&mut ranks, cond[idx]);
+        let num = find_max_count(&mut ranks, cond[idx]);
         if num.is_some() { result.push(num.unwrap()) }
         else { return None }
     }
@@ -176,28 +176,3 @@ fn evaluate_pairs_or_over(cond: Vec<u8>, mut ranks: [u8; 15]) -> Option<Vec<u8>>
     Some(result)
 }
 
-#[allow(dead_code)]
-fn print_suits_rank_card_orders (suits: &[Vec<u8>; 4], ranks: &[u8; 15], card_orders: &Vec<u8>) {
-    // print Debug
-    print!("Suits:");
-    for suit in suits.iter() {
-        print!(" [");
-        for num in suit.iter() {
-            print!("{num} ");
-        }
-        print!("] ");
-    }
-    println!("");
-
-    print!("Ranks: [");
-    for rank in ranks.iter() {
-        print!("{rank} ");
-    }
-    println!("]");
-
-    print!("Cards: [");
-    for card in card_orders.iter() {
-        print!("{card} ");
-    }
-    println!("]");
-}

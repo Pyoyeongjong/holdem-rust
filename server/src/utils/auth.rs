@@ -1,6 +1,6 @@
 use jsonwebtoken::{decode, Algorithm, Validation, DecodingKey};
 
-use crate::webcommu::Claims;
+use crate::utils::http_utils::Claims;
 
 // 아이디 반환
 pub fn verify_token(token: &str, server_key: &str) -> Option<String> {

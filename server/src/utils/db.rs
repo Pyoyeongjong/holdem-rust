@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection, OptionalExtension, Result};
 use bcrypt::{verify, DEFAULT_COST, hash};
 
-use crate::player::Player;
+use crate::game::player::Player;
 
 const PATH: &str = "./my_db.db3";
 

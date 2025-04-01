@@ -1,6 +1,6 @@
 /* Debug functions! */
 /* 그리고 여러 함수들 (공부용) */
-
+#[allow(dead_code)]
 fn make_cards() -> Vec<String>{
 
     let mut deck = Vec::new();

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
-pub struct ActionFlag {
+pub struct PlayerAction {
     pub check: bool,
     pub call: bool,
     pub raise: bool,
@@ -9,7 +9,7 @@ pub struct ActionFlag {
     pub fold: bool,
 }
 
-impl ActionFlag {
+impl PlayerAction {
     pub fn new() -> Self {
         Self {
             check: true,
@@ -19,4 +19,14 @@ impl ActionFlag {
             fold: true,
         }
     }
+}
+#[derive(Serialize, Deserialize, PartialEq)]
+pub enum GameState {
+    Init,
+    BeforeStart,
+    FreeFlop,
+    Flop,
+    River,
+    Turn,
+    ShowDown,
 }

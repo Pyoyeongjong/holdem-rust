@@ -1,30 +1,30 @@
-use std::collections::VecDeque;
 use std::net::SocketAddr;
 use futures_channel::mpsc::UnboundedSender;
-use rand::seq::SliceRandom;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::player::Player;
-use crate::room::{GameCommand, PlayerInfo};
-use crate::player::PlayerState;
-use crate::{db, params};
+use crate::game::player::Player;
+use crate::room::types::{GameCommand,PlayerInfo};
+use crate::game::player::PlayerState;
+use crate::utils::{db, config};
 
-mod actionflag;
-mod evaluate;
+use crate::game::{types, rank};
 
-use evaluate::evaluate_hand;
-use actionflag::ActionFlag;
+use rank::rank_hand;
+use types::PlayerAction;
 
-const MAX_PLAYER: usize = params::MAX_PLAYER;
+use crate::game::table::Table;
+
+use super::error::GameError;
+use super::player_manager::PlayerManager;
+use super::types::GameState;
+
+const MAX_PLAYER: usize = config::MAX_PLAYER;
 
 pub struct Game {
     _id: usize,
-    players: Vec<Player>,   
-    deck: VecDeque<String>, 
-    pot: usize,
-    board: Vec<String>,
+    players: PlayerManager,
+    table: Table,
     // Game Info 로 묶어서 관리할 수 있을 듯
     sb_idx: usize, // sb_idx로 변경해도 될 듯
     blind: usize, // big_blind
@@ -38,59 +38,12 @@ pub struct Game {
     call_pot: usize
 }
 
-#[derive(Serialize, Deserialize, PartialEq)]
-enum GameState {
-    Init,
-    BeforeStart,
-    FreeFlop,
-    Flop,
-    River,
-    Turn,
-    ShowDown,
-}
-
-#[allow(dead_code)]
-impl Game {
-    pub fn print_deck(&self) {
-        print!("Deck: ");
-        for card in self.deck.iter() {
-            print!("{} ", card);
-        }
-        println!("");
-    }
-
-    pub fn print_board(&self) {
-        print!("Board: ");
-        for card in self.board.iter() {
-            print!("{} ", card);
-        }
-        println!("");
-    }
-
-    pub fn print_player_hands(&self) {
-        for player in self.players.iter() {
-            if player.is_alive() { 
-                println!("{} has {}, {}", player.id, player.hands.as_ref().unwrap().0, player.hands.as_ref().unwrap().1) 
-            }
-        }
-    }
-
-    pub fn print_player_chips(&self) {
-        for player in self.players.iter() {
-            println!("{} has {} chips now.", player.id, player.chips)
-        }
-    }
-    
-}
-
 impl Game {
     pub fn new(id: usize, blind: usize) -> Game {
         Game {
             _id: id,
-            players: Vec::new(),
-            deck: Game::init_deck(),
-            pot: 0,
-            board: Vec::new(),
+            players: PlayerManager::new(MAX_PLAYER),
+            table: Table::new(),
             sb_idx: 0,
             blind,
             game_state: GameState::Init,
@@ -104,16 +57,18 @@ impl Game {
     }
 
     pub fn auth_player(&self, id: String) -> bool {
-        let player = &self.players[self.cur_idx];
+        let players = self.players.get_players();
+        let player = &players[self.cur_idx];
         if id == player.id { true }
         else { false }
     }
 
-    // 얘는 player client로 가는 tx에 쏴준다.
+    // game에 따라 가려야 하는 정보가 있어서 game 자체에서 관장해야 할듯
     pub fn broadcast(&self, is_finished: bool) {
         println!("broadcast!");
+        let players = self.players.get_players();
         
-        for player in self.players.iter() {
+        for player in players.iter() {
             let mut state= self.current_game_state(&player.id, is_finished);
 
             if let Value::Object(obj) = &mut state {
@@ -125,20 +80,10 @@ impl Game {
         }
     }
 
-    fn kick_player(&mut self) {
-        let msg = json!({
-            "type": "kick"
-        });
-        for player in self.players.iter() {
-            if player.chips <= 0 {
-                player.tx.unbounded_send(Message::Text(msg.clone().to_string().into())).unwrap()
-            }
-        }
-    }
-
     pub fn current_game_state(&self, id: &String, is_finished: bool) -> Value {
 
-        let mut players_json: Vec<Value>= self.players.iter().map(|player| {
+        let players = self.players.get_players();
+        let mut players_json: Vec<Value>= players.iter().map(|player| {
             let hands = player.hands.clone()
                 .unwrap_or(("??".to_string(), "??".to_string()));
             json!({
@@ -155,13 +100,13 @@ impl Game {
             players_json.push(Value::Null);
         }
 
-        let cards = self.board.clone();
+        let cards = self.table.get_board();
 
         let curr_state = json!({
             "type": "game_state",
             "players": players_json,
             "board": {
-                "pot": self.pot,
+                "pot": self.table.pot,
                 "bb": self.blind,
                 "cards": cards,
                 "state": self.game_state,
@@ -172,50 +117,36 @@ impl Game {
         curr_state
     }
 
-    pub fn get_players_len(&self) -> usize {
+    pub fn players_len(&self) -> usize {
         if self.game_state == GameState::Init {
             return 1;
         }
-        self.players.len()
+        self.players.get_players_len()
     }
 
     // 새로운 Player를 만들어서 Waiting Queue Push하기
-    pub fn insert_player(&mut self, info: PlayerInfo, tx: UnboundedSender<Message>) {
-        if self.game_state == GameState::Init {
-            self.game_state = GameState::BeforeStart;
-        }
+    pub fn insert_player(&mut self, info: PlayerInfo, tx: UnboundedSender<Message>) -> Result<(), GameError>{
+        if self.game_state == GameState::Init { self.game_state = GameState::BeforeStart; }
         let player = Player::new(info.name, info.chips, info.addr, tx.clone());
-        self.players.push(player);
-
-        println!("Inserted Player! player_len: {}",self.players.len());
-
+        self.players.add_player(player)
     }
 
-    pub fn delete_player_by_addr(&mut self, addr: SocketAddr) {
-        for (i, player) in self.players.iter().enumerate() {
-            // C에선 안되는데 ㅋㅋ 개꿀
-            if player.addr == addr {
-                self.players.remove(i);
-                println!("Found player and removed! player_len is {}", self.players.len() );
-                break;
-            }
-        }
+    pub fn delete_player(&mut self, addr: SocketAddr) -> Result<(), GameError>{
+        self.players.remove_player_by_addr(addr)
     }
 
     fn reset_game_player_state(&mut self) {
-        self.have_extra_chips = self.players.len();
-        self.alive = self.players.len();
+        self.have_extra_chips = self.players.get_players_len();
+        self.alive = self.players.get_players_len();
         self.winners = 0;
     }
 
     fn update_game_info(&mut self) {
-        self.sb_idx = (self.sb_idx + 1) % self.players.len();
+        self.sb_idx = (self.sb_idx + 1) % self.players.get_players_len();
     }
 
     pub fn reset_game(&mut self) {
-        self.deck = Game::init_deck();
-        self.board = Vec::new();
-        self.pot = 0;
+        self.table = Table::new();
     }
 
     pub fn is_game_start(&self) -> bool {
@@ -223,57 +154,59 @@ impl Game {
     }
 
     pub fn is_game_can_start(&self) -> bool {
-        self.players.len() >= 2
+        self.players.get_players_len() >= 2
     }
-    pub fn game_start(&mut self) {
+    pub fn game_start(&mut self) -> Result<(), GameError>{
         
-        self.init_player_state();
+        self.players.init_player_state();
         self.reset_game_player_state();
         self.update_game_info();
         self.reset_game();
 
-        self.print_player_chips();
+        self.players.print_player_chips();
         
         // run hands
-        for player in self.players.iter_mut() {
-            
-            let card1 = self.deck.pop_front().unwrap();
-            let card2 = self.deck.pop_front().unwrap();
-
+        for player in self.players.get_players_mut().iter_mut() {
+            let card1 = self.table.draw_card()?;
+            let card2 = self.table.draw_card()?;
             player.hands = Some((card1, card2));
         }
 
-        self.print_player_hands();
+        self.players.print_player_hands();
         self.game_state = GameState::FreeFlop;
         self.betting_phase_init();
+
+        Ok(())
     }
 
-    pub fn after_betting(&mut self) {
+    pub fn after_betting(&mut self) -> Result<bool, GameError> {
 
-        if self.is_game_finished() {
-            if let Err(e) = db::save_result_in_db(&self.players) {
+
+        if self.is_game_finished()? {
+            println!("game finished!");
+            if let Err(e) = db::save_result_in_db(&self.players.get_players()) {
                 eprintln!("DB Save Result in DB Error!: {e}");
             }
-            self.kick_player();
-            return
+            self.players.kick_player();
+            return Ok(true)
         }
 
-        self.set_player_idle();
+        self.players.set_player_idle();
 
         // Flop
         match self.game_state {
             GameState::FreeFlop => {
                 for _ in 0..3 {
-                    self.board.push(self.deck.pop_front().unwrap());
+                    self.table.place_card_in_board()?;
                 }
                 self.game_state = GameState::Flop;
             },
             GameState::Flop => {
-                self.board.push(self.deck.pop_front().unwrap());
+                self.table.place_card_in_board()?;
                 self.game_state = GameState::Turn;
             },
             GameState::Turn => {
-                self.board.push(self.deck.pop_front().unwrap());
+                self.table.place_card_in_board()?;
                 self.game_state = GameState::River;
             },
             GameState::River => { self.game_state = GameState::ShowDown; },
@@ -281,52 +214,25 @@ impl Game {
         }
 
         self.betting_phase_init();
-    }
-
-    fn init_player_state(&mut self) {
-        for player in self.players.iter_mut() { // iter_mut 으로 가변 참조로 불러옴
-            player.change_state(PlayerState::Idle);
-            player.hands = None;
-        }
-    }
-
-    fn init_deck() -> VecDeque<String>{
-
-        let mut deck = Vec::new();
-        let mut rng = rand::rng();
-        
-        let suits = vec!["♠", "◆", "♥", "♣"];
-        let ranks = vec!["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"];
-        // for rank in ranks -> 소유권을 가져감
-        // for rank in ranks.iter() -> 참조만 함
-        for suit in suits.iter() {
-            for rank in ranks.iter() {
-                deck.push(format!("{}{}", suit, rank)); // format은 참조자를 이용한다. -> 그리고 새로운 String 반환환다.
-            }
-        };
-
-        deck.shuffle(&mut rng);
-
-        let deck: VecDeque<String> = VecDeque::from(deck);
-        deck
+        Ok(false)
     }
 
     fn betting_phase_init(&mut self) {
 
         if self.game_state == GameState::FreeFlop {
 
-            let bb_idx = (self.sb_idx + 1) % self.players.len();
-            self.cur_idx = (self.sb_idx + 2) % self.players.len();
+            let bb_idx = (self.sb_idx + 1) % self.players.get_players_len();
+            self.cur_idx = (self.sb_idx + 2) % self.players.get_players_len();
 
-            self.player_blind_raise(self.sb_idx as usize, self.blind / 2);
-            self.player_blind_raise(bb_idx as usize, self.blind);
+            self.handle_player_blind_raise(self.sb_idx as usize, self.blind / 2);
+            self.handle_player_blind_raise(bb_idx as usize, self.blind);
 
             self.call_pot = self.blind; // 왠만하면 string 빼고 다 copy trait 가지고 있다 생각하면 될듯. .clone() 쓸 필요 없음
             
         } else {
             // 플랍부터는 sb부터!
             self.cur_idx = self.sb_idx;
-            self.call_pot = self.find_largest_player_pot();
+            self.call_pot = self.players.find_largest_player_pot();
         }
     }
 
@@ -337,12 +243,12 @@ impl Game {
             return;
         }
 
-        let mut flag: ActionFlag = ActionFlag::new();
-        let player = &self.players[self.cur_idx];
+        let mut flag: PlayerAction = PlayerAction::new();
+        let player = self.players.get_player_by_idx(self.cur_idx);
 
         println!("--------------------");
         println!("[Game] {}, Your turn.", player.id);
-        println!("[Game] Current Pot-size is {}", self.pot);
+        println!("[Game] Current Pot-size is {}", self.table.pot);
         println!("[Game] Your chips amount is {}.", player.chips);
 
         if self.call_pot == 0 || player.player_pot == self.call_pot {
@@ -352,7 +258,6 @@ impl Game {
             println!("{} {}", self.call_pot, player.player_pot);
             println!("[Game] You have to bet {} to call.", self.call_pot - player.player_pot);
             flag.check = false;
-
             if player.chips + player.player_pot <= self.call_pot {
                 flag.raise = false;
                 flag.call = false;
@@ -370,22 +275,17 @@ impl Game {
         player.tx.unbounded_send(Message::Text(state.clone().into())).unwrap();
     }
 
-    pub fn get_next_player_idx(&mut self) -> bool{
-
-        println!("Hi snp");
+    pub fn get_next_player_idx(&mut self) -> Result<bool, GameError>{
 
         loop {
-
             self.cur_idx = self.next_idx(self.cur_idx);
 
             if self.is_bet_finished() {
                 println!("Set_next_player is bet finished");
-                self.after_betting();
-                return true;
+                return self.after_betting()
             }
 
-            let player = &self.players[self.cur_idx];
-
+            let player = self.players.get_player_by_idx(self.cur_idx);
 
             if !player.is_alive() || player.state == PlayerState::AllIn {
                 self.cur_idx = self.next_idx(self.cur_idx);
@@ -394,38 +294,38 @@ impl Game {
                 break;
             }
         }
-        false
+        Ok(false)
     }
 
-    pub fn betting_phase_action(&mut self, bet_action: GameCommand) -> bool{
+    pub fn betting_phase_action(&mut self, bet_action: GameCommand) -> Result<bool, GameError> {
 
-        let player = &self.players[self.cur_idx];
+        let player = self.players.get_player_by_idx(self.cur_idx);
 
         println!("Hi betting phase action!");
 
         self.call_pot = match bet_action {
             GameCommand::Check => {
-                self.player_check(self.cur_idx);
+                self.handle_player_check(self.cur_idx);
                 self.call_pot
             }
             GameCommand::Call => {
-                self.player_call(self.cur_idx, self.call_pot - player.player_pot);
+                self.handle_player_call(self.cur_idx, self.call_pot - player.player_pot);
                 self.call_pot
             }
             GameCommand::Raise(size) => {
 
                 if player.chips < size {
                     println!("[Game] Can't raise with this num! Try again.");
-                    return false;
+                    return Ok(false);
                 } 
                 
-                self.player_raise(self.cur_idx, size)
+                self.handle_player_raise(self.cur_idx, size)
             },
             GameCommand::AllIn => {
-                self.player_allin(self.cur_idx, self.call_pot)
+                self.handle_player_allin(self.cur_idx, self.call_pot)
             },
             GameCommand::Fold => {
-                self.player_fold(self.cur_idx);
+                self.handle_player_fold(self.cur_idx);
                 self.call_pot
             },
             _ => {
@@ -435,22 +335,24 @@ impl Game {
         };
 
         self.get_next_player_idx()
+        
     }
 
-    fn is_game_finished(&mut self) -> bool{
+    fn is_game_finished(&mut self) -> Result<bool, GameError>{
 
         if self.is_early_showdown() || self.game_state == GameState::River {
-            self.early_showdown();
-            self.print_board();
-            self.print_player_hands();
+            self.early_showdown()?;
+            self.table.print_board();
+            self.players.print_player_hands();
             self.winner_takes_pot();
-            return true;
+            return Ok(true);
         }
 
         if self.only_one_left() {
-            self.print_board();
-            self.print_player_hands();
-            for player in self.players.iter_mut() {
+            self.table.print_board();
+            self.players.print_player_hands();
+            let players = self.players.get_players_mut();
+            for player in players.iter_mut() {
                 if player.is_alive() {
                     player.change_state(PlayerState::Winner);
                     self.winners += 1;
@@ -458,14 +360,14 @@ impl Game {
             }
 
             self.winner_takes_pot();
-            return true;
+            return Ok(true);
         }
 
-        false
+        Ok(false)
     }
 
     fn next_idx(&self, idx: usize) -> usize {
-        (idx + 1) % self.players.len()
+        (idx + 1) % self.players.get_players_len()
     }
 
     /* 둘 이상이 있고, 올인하지 않은 플레이어가 1명 이하일 때 */
@@ -484,68 +386,73 @@ impl Game {
         false
     }
 
-    fn early_showdown(&mut self) {
-
-        // 보드 다 깔기
-        while self.board.len() < 5 {
-            self.board.push(self.deck.pop_front().unwrap());
-        }
-
+    fn early_showdown(&mut self) -> Result<(), GameError>{
+        self.table.set_board_full()?;
         self.show_down();
+        Ok(())
     }
 
-    fn set_player_idle(&mut self) {
-        for player in self.players.iter_mut() {
-            if player.should_return_to_idle() {
-                player.state = PlayerState::Idle;
-            }
-        }
-    }
+    fn handle_player_raise(&mut self, idx: usize, size: usize) -> usize {
 
-    fn player_raise(&mut self, idx: usize, size: usize) -> usize {
+        let player = self.players.get_player_by_idx_mut(idx);
 
-        let is_allin = self.players[idx].raise(size);
-        self.pot += size;
+        let is_allin = player.raise(size);
+        self.table.pot += size;
         if is_allin { self.have_extra_chips -= 1; }
-        self.players[idx].player_pot
+
+        player.player_pot
     }
 
-    fn player_allin(&mut self, idx: usize, call_pot: usize) -> usize {
+    fn handle_player_allin(&mut self, idx: usize, call_pot: usize) -> usize {
+
+        let player = self.players.get_player_by_idx_mut(idx);
         
-        self.pot += self.players[idx].chips;
-        self.players[idx].allin();
+        self.table.pot += player.chips;
+        player.allin();
         self.have_extra_chips -= 1;
 
-        if self.players[idx].player_pot > call_pot {
-            self.players[idx].player_pot
+        if player.player_pot > call_pot {
+            player.player_pot
         } else {
             call_pot
         }
     }
 
-    fn player_blind_raise(&mut self, idx: usize, size: usize) -> usize {
-        self.pot += size;
-        self.players[idx].blind_raise(size);
-        self.players[idx].player_pot
+    fn handle_player_blind_raise(&mut self, idx: usize, size: usize) -> usize {
+
+        let player = self.players.get_player_by_idx_mut(idx);
+
+        self.table.pot += size;
+        player.blind_raise(size);
+        player.player_pot
     }
 
-    fn player_call(&mut self, idx: usize, size: usize) {
-        self.pot += size;
-        self.players[idx].call(size);
+    fn handle_player_call(&mut self, idx: usize, size: usize) {
+
+        let player = self.players.get_player_by_idx_mut(idx);
+
+        self.table.pot += size;
+        player.call(size);
     }
 
-    fn player_check(&mut self, idx: usize) {
-        self.players[idx].check();
+    fn handle_player_check(&mut self, idx: usize) {
+
+        let player = self.players.get_player_by_idx_mut(idx);
+
+        player.check();
     }
 
-    fn player_fold(&mut self, idx: usize) {
-        self.players[idx].fold();
+    fn handle_player_fold(&mut self, idx: usize) {
+
+        let player = self.players.get_player_by_idx_mut(idx);
+
+        player.fold();
         self.alive -= 1;
         self.have_extra_chips -= 1;
     }
 
     fn is_bet_finished(&mut self) -> bool {
-        let player = &self.players[self.cur_idx];
+        let player = self.players.get_player_by_idx(self.cur_idx);
         if (self.call_pot == player.player_pot && player.is_acted()) || self.only_one_left() { true } 
         else { false }
     }
@@ -564,9 +471,9 @@ impl Game {
             winner_cards.push(winner_hand.0);
             winner_cards.push(winner_hand.1);
     
-            if evaluate_hand(&player_cards) > evaluate_hand(&winner_cards) {
+            if rank_hand(&player_cards) > rank_hand(&winner_cards) {
                 1
-            } else if evaluate_hand(&player_cards) == evaluate_hand(&winner_cards) {
+            } else if rank_hand(&player_cards) == rank_hand(&winner_cards) {
                 0
             } else {
                 -1
@@ -575,7 +482,8 @@ impl Game {
 
         // 살아남은 플레이어가 1명일 때
         if self.only_one_left() {
-            for player in self.players.iter_mut() {
+            let players = self.players.get_players_mut();
+            for player in players.iter_mut() {
                 if player.is_alive() {
                     player.state = PlayerState::Winner;
                     self.winners = 1;
@@ -585,9 +493,10 @@ impl Game {
         }
 
         let mut winners: Vec<&mut Player> = Vec::new();
-        let board = self.board.clone();
+        let board = self.table.get_board();
+        let players = self.players.get_players_mut();
 
-        for player in self.players.iter_mut() {
+        for player in players.iter_mut() {
             if winners.len() == 0 {
                 winners.push(player);
             } else {
@@ -610,47 +519,28 @@ impl Game {
         }
     }
 
-    fn find_largest_player_pot(&self) -> usize {
-        let mut result: usize = 0;
-        for player in self.players.iter() {
-            if player.is_alive() && player.player_pot > result {
-                result = player.player_pot;
-            }
-        }
-        result
-    }
-
-    fn find_smallest_player_pot(&self) -> usize {
-        let mut result: usize = 0xffffffff;
-        for player in self.players.iter() {
-            if player.is_alive() && player.player_pot < result {
-                result = player.player_pot;
-            }
-        }
-        result
-    }
-
     pub fn winner_takes_pot(&mut self) { // Chop이 날 수 있음 주의!
 
-        let main_pot = self.find_smallest_player_pot();
+        let main_pot = self.players.find_smallest_player_pot();
+        let players = self.players.get_players_mut();
 
-        for player in self.players.iter_mut() {
+        for player in players.iter_mut() {
             if player.state == PlayerState::Winner && player.player_pot > main_pot {
                 let side_pot = player.player_pot - main_pot;
                 player.get_chips(side_pot);
-                self.pot -= side_pot;
+                self.table.pot -= side_pot;
             }
         }
         
-        for player in self.players.iter_mut() {
+        for player in players.iter_mut() {
             if player.state == PlayerState::Winner {
-                player.chips +=  self.pot / self.winners;
-                println!("Winner {} takes {} chips!", player.id, self.pot / self.winners)
+                player.chips +=  self.table.pot / self.winners;
+                println!("Winner {} takes {} chips!", player.id, self.table.pot / self.winners)
             }
             player.player_pot = 0;
         }
 
-        self.pot = 0;
+        self.table.pot = 0;
         self.game_state = GameState::BeforeStart;
     }
 

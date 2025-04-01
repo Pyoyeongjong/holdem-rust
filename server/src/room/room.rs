@@ -1,12 +1,9 @@
 use std::{
-    collections::HashMap, 
     net::SocketAddr,
     sync::{atomic::{AtomicUsize, Ordering}, Arc},
 };
 
-use tokio::sync::{Mutex, RwLock};
-
-use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::{
     tungstenite::{protocol::Message, Utf8Bytes},
@@ -21,54 +18,13 @@ use futures_util::{future::{self}, pin_mut, stream::TryStreamExt, StreamExt};
 
 use serde_json::{json, Value};
 
-use crate::{authentication::verify_token, db::{self}, game::Game, params};
-type Tx = UnboundedSender<Message>;
-pub type PeerMap = Arc<Mutex<HashMap<SocketAddr, TxInfo>>>;
+use crate::{
+    game::game::Game, 
+    utils::{auth::verify_token, config::{PeerMap, SERVER_SECRET}, db::{self}}};
+use super::{room_manager::RoomManager, types::{GameCommand, GameRequest, GameResponse, PlayerInfo, RoomInfo, TxInfo}};
 
 // 전역 변수를 안전하게 접근하고 싶음 이렇게 하자
 static ROOMS_IDX: AtomicUsize = AtomicUsize::new(0);
-
-const MAX_PLAYER: usize = params::MAX_PLAYER;
-const SERVER_SECRET: &str = params::SERVER_SECRET;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,
-    exp: usize,
-}
-
-pub struct TxInfo {
-    pub tx: Tx,
-    pub room_id: Option<usize>
-}
-
-
-#[derive(Serialize, Deserialize)]
-pub struct RoomInfo {
-    id: usize,
-    name: String,
-    max_player: usize,
-    cur_player: usize,
-    bb: usize,
-}
-
-impl RoomInfo {
-    pub fn new(id: usize, name: String, bb: usize) -> RoomInfo {
-        RoomInfo { id, name, max_player: MAX_PLAYER, cur_player: 0, bb }
-    }
-}
-
-impl Clone for RoomInfo {
-    fn clone(&self) -> Self {
-        RoomInfo {
-            id: self.id,
-            name: self.name.clone(),
-            max_player: self.max_player,
-            cur_player: self.cur_player,
-            bb: self.bb
-        }
-    }
-}
 
 pub struct Room {
     pub id: usize,
@@ -82,7 +38,7 @@ pub struct Room {
 
 impl Room {
 
-    pub fn new(name: String, blind: usize, rooms_thread_pool: Arc<RwLock<RoomThreadPool>>) -> Room {
+    pub fn new(name: String, blind: usize, rooms_thread_pool: Arc<RwLock<RoomManager>>) -> Room {
 
         let room_idx = ROOMS_IDX.fetch_add(1, Ordering::Relaxed);
 
@@ -126,7 +82,7 @@ pub async fn handle_connection(
     peer_map: PeerMap,
     ws_stream: WebSocketStream<TokioIo<Upgraded>>,
     addr: SocketAddr,
-    rooms_thread_pool: Arc<RwLock<RoomThreadPool>>,
+    rooms_thread_pool: Arc<RwLock<RoomManager>>,
 ) {
     //
     let peer_map_cloned = peer_map.clone();
@@ -209,12 +165,17 @@ pub async fn handle_connection(
 
 // 게임 로직 처리
 // 함수에 소유권을 가져왔으니 rx_game에 mut을 붙이든 맘대로 해도 된다
-async fn game_thread(id: usize, mut rx_game: mpsc::Receiver<GameRequest>, _tx_room: mpsc::Sender<GameResponse>, rooms_thread_pool: Arc<RwLock<RoomThreadPool>>) {
+async fn game_thread(
+    id: usize, 
+    mut rx_game: mpsc::Receiver<GameRequest>, 
+    _tx_room: mpsc::Sender<GameResponse>, 
+    rooms_thread_pool: Arc<RwLock<RoomManager>>) 
+{
     
     let mut game = Game::new(id, 100);
 
     loop {
-        if game.get_players_len() <= 0 {
+        if game.players_len() <= 0 {
             break;
         }
 
@@ -226,7 +187,10 @@ async fn game_thread(id: usize, mut rx_game: mpsc::Receiver<GameRequest>, _tx_ro
                 match cmd {
                     GameCommand::StartGame => {
                         if game.is_game_can_start() {
-                            game.game_start();
+                            game.game_start().unwrap_or_else(|e| {
+                                eprintln!("{:?}", e);
+                                game.reset_game();
+                            });
                         } else {
                             println!("Game can't start");
                         }
@@ -238,7 +202,11 @@ async fn game_thread(id: usize, mut rx_game: mpsc::Receiver<GameRequest>, _tx_ro
                     | GameCommand::AllIn
                     | GameCommand::Fold => {
                         if game.is_game_start() && game.auth_player(id) {
-                            game.betting_phase_action(cmd)
+                            game.betting_phase_action(cmd).unwrap_or_else(|e| {
+                                eprintln!("{:?}", e);
+                                game.reset_game();
+                                false
+                            })
                         } else {
                             println!("Game is not started or you are not turn");
                             false
@@ -247,19 +215,26 @@ async fn game_thread(id: usize, mut rx_game: mpsc::Receiver<GameRequest>, _tx_ro
                 }
             },
             GameRequest::AddPlayer { info, socket } => {
-                game.insert_player(info, socket.clone());
+                game.insert_player(info, socket.clone()).unwrap_or_else(|e| {
+                    eprintln!("{:?}", e);
+                    game.reset_game();
+                });
                 socket.unbounded_send(Message::Text(Utf8Bytes::from(json!({
                     "type": "msg"
                 }).to_string()))).unwrap();
                 false
             },
             GameRequest::RemovePlayer { addr } => {
-                game.delete_player_by_addr(addr);
+                game.delete_player(addr).unwrap_or_else(|e| {
+                    eprintln!("{:?}", e);
+                    game.reset_game();
+                });
                 false
             }
         };
 
         // broadcast info
+        println!("is_finished = {}",is_finished);
         game.broadcast(is_finished);
         // next Player 에게 state 따로 보내기
         game.betting_phase_annotation();
@@ -273,7 +248,7 @@ async fn game_thread(id: usize, mut rx_game: mpsc::Receiver<GameRequest>, _tx_ro
 }
 
 // 이것만 플레이어 연결 없이도 가능하다.
-async fn handle_join_game(json: &Value, peer_map: PeerMap, addr: SocketAddr, rooms_thread_pool: Arc<RwLock<RoomThreadPool>>) {
+async fn handle_join_game(json: &Value, peer_map: PeerMap, addr: SocketAddr, rooms_thread_pool: Arc<RwLock<RoomManager>>) {
     
     let room_id = json["roomId"].as_u64().unwrap() as usize;
     println!("Hello handle_game! room_id={room_id}");
@@ -306,7 +281,7 @@ async fn handle_join_game(json: &Value, peer_map: PeerMap, addr: SocketAddr, roo
 
 }
 
-async fn handle_action(json: &Value, rooms_thread_pool: Arc<RwLock<RoomThreadPool>>) {
+async fn handle_action(json: &Value, rooms_thread_pool: Arc<RwLock<RoomManager>>) {
     
     let room_id = json["roomId"].as_u64().unwrap() as usize;
     let access_token = json["access_token"].as_str().unwrap();
@@ -337,94 +312,5 @@ async fn handle_default(json: &Value) {
     println!("Hello {}", json["type"]);
 }
 
-
-pub struct RoomThreadPool{
-    rooms: Vec<Room>,
-    max_size: usize,
-}
-
-impl RoomThreadPool {
-    pub fn new(size: usize) -> RoomThreadPool {
-
-        let rooms = Vec::with_capacity(size);
-        // Game Thread가 종료하면서 room_thread에게 room 청소해달라고 요청할 거임
-
-        RoomThreadPool { rooms, max_size: size }
-    }
-
-    pub fn craete_new_room(&mut self, name: &str, blind: usize, room_thread_pool: Arc<RwLock<RoomThreadPool>>) -> bool {
-
-        if self.rooms.len() >= self.max_size || name == "" || blind <= 0 || blind % 10 > 0 {
-
-            println!("Create New Room Failed. {} {}", name, blind % 10);
-            return false
-        }
-
-        let new_room = Room::new(name.to_string(), blind, room_thread_pool);
-        self.rooms.push(new_room);
-
-        println!("Create New Room Succeed. Size of Rooms is {}", self.rooms.len());
-        true
-    }
-
-    // 일단은 vector 순회로 하시죠
-    pub fn find_room_by_id(&mut self, id: usize) -> Option<&mut Room> {
-        self.find_room(id)
-    }
-
-    pub fn get_rooms_info(&self) -> Vec<RoomInfo>{
-
-        let mut rooms_info = Vec::new();
-        for room in self.rooms.iter() {
-            rooms_info.push(room.room_info.clone());
-        }
-
-        rooms_info
-    }
-
-    fn find_room(&mut self, id: usize) -> Option<&mut Room> {
-        // 설탕 달달하네..
-        self.rooms.iter_mut().find(|room| room.id == id)
-
-    }
-
-    pub fn delete_room(&mut self, idx: usize) {
-
-        println!("Hello Delete Room idx={idx}");
-
-        for (room_idx, room) in self.rooms.iter_mut().enumerate() {
-            if room.id == idx {
-                self.rooms.remove(room_idx);
-                return;
-            }
-        }
-    }
-
-}
-
-// 정보 보내기용
-pub struct PlayerInfo{
-    pub _id: String,
-    pub name: String,
-    pub addr: SocketAddr,
-    pub chips: usize,
-}
-
-enum GameRequest {
-    Command { cmd: GameCommand, id: String},
-    AddPlayer { info: PlayerInfo, socket: UnboundedSender<Message>},
-    RemovePlayer { addr: SocketAddr }
-}
-
-pub enum GameCommand {
-    StartGame, 
-    Check,
-    Call,
-    Raise(usize),
-    AllIn,
-    Fold,
-}
-
-pub enum GameResponse {}
 
 

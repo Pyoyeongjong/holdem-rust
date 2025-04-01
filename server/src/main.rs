@@ -3,17 +3,10 @@
 // 프로젝트 내부 모듈
 
 // main에 명시해줘야 컴파일 모듈로써 기능을 한다.
-mod game;
-mod player;
-mod room;
-mod db;
-mod webcommu;
-mod authentication;
-mod params;
 
-use room::{RoomThreadPool, handle_connection, PeerMap};
-use webcommu::*;
-use authentication::verify_token;
+use server::game::player;
+use server::room::{room_manager::RoomManager, room::handle_connection};
+use server::utils::{auth::verify_token, db, http_utils::*, config::PeerMap};
 
 use tokio::net::TcpListener;
 use hyper::server::conn::http1;
@@ -68,7 +61,7 @@ fn send_http_response_falied(code: u16, msg: String) -> Result<Response<BoxBody<
 async fn handle_request(
     mut req: Request<Incoming>,
     addr: SocketAddr,
-    rooms_thread_pool: Arc<RwLock<RoomThreadPool>>, // TODO: 근데 쓰레드 풀 자체가 RwLock일 필요가 있나? Room 별로 RwLock이어야 하지 않나? 생각해보기
+    rooms_thread_pool: Arc<RwLock<RoomManager>>, // TODO: 근데 쓰레드 풀 자체가 RwLock일 필요가 있나? Room 별로 RwLock이어야 하지 않나? 생각해보기
     peer_map: PeerMap,
 ) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
 
@@ -368,7 +361,7 @@ async fn handle_request(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
-    let room_thread_pool = Arc::new(RwLock::new(RoomThreadPool::new(5)));
+    let room_thread_pool = Arc::new(RwLock::new(RoomManager::new(5)));
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
     let server_addr = SocketAddr::from(([127, 0, 0, 1], 8080));
     let listener = TcpListener::bind(server_addr).await?;

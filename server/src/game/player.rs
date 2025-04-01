@@ -1,10 +1,8 @@
 use std::net::SocketAddr;
-use crate::db;
 use futures_channel::mpsc::UnboundedSender;
-
-// 
-
 use tokio_tungstenite::tungstenite::Message;
+
+use crate::utils::db;
 
 // Player는 room에 종속된 구조체 -> room 바깥에서 생성되거나 따로 관장될 수 없음.
 pub struct Player {
